@@ -1428,14 +1428,14 @@ static void mlx5e_rep_register_vf_vports(struct mlx5e_priv *priv)
 	}
 }
 
-static void mlx5e_rep_unregister_vf_vports(struct mlx5e_priv *priv)
+static void mlx5e_rep_unregister_vports(struct mlx5e_priv *priv)
 {
 	struct mlx5_core_dev *mdev = priv->mdev;
 	struct mlx5_eswitch *esw = mdev->priv.eswitch;
 	int total_vfs = MLX5_TOTAL_VPORTS(mdev);
 	int vport;
 
-	for (vport = 1; vport < total_vfs; vport++)
+	for (vport = total_vfs - 1; vport >= 0; vport--)
 		mlx5_eswitch_unregister_vport_rep(esw, vport, REP_ETH);
 }
 
@@ -1461,11 +1461,7 @@ void mlx5e_register_vport_reps(struct mlx5e_priv *priv)
 
 void mlx5e_unregister_vport_reps(struct mlx5e_priv *priv)
 {
-	struct mlx5_core_dev *mdev = priv->mdev;
-	struct mlx5_eswitch *esw   = mdev->priv.eswitch;
-
-	mlx5e_rep_unregister_vf_vports(priv); /* VFs vports */
-	mlx5_eswitch_unregister_vport_rep(esw, 0, REP_ETH); /* UPLINK PF*/
+	mlx5e_rep_unregister_vports(priv); /* all vports */
 }
 
 void *mlx5e_alloc_nic_rep_priv(struct mlx5_core_dev *mdev)
