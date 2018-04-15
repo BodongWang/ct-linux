@@ -1279,6 +1279,7 @@ mlx5e_nic_rep_load(struct mlx5_core_dev *dev, struct mlx5_eswitch_rep *rep)
 	if (err)
 		goto err_neigh_cleanup;
 
+	rep->rep_if[REP_ETH].state = REP_LOADED;
 	return 0;
 
 err_neigh_cleanup:
@@ -1294,6 +1295,8 @@ mlx5e_nic_rep_unload(struct mlx5_eswitch_rep *rep)
 {
 	struct mlx5e_rep_priv *rpriv = mlx5e_rep_to_rep_priv(rep);
 	struct mlx5e_priv *priv = netdev_priv(rpriv->netdev);
+
+	rep->rep_if[REP_ETH].state = REP_REGISTERED;
 
 	if (test_bit(MLX5E_STATE_OPENED, &priv->state))
 		mlx5e_remove_sqs_fwd_rules(priv);
@@ -1362,6 +1365,7 @@ mlx5e_vport_rep_load(struct mlx5_core_dev *dev, struct mlx5_eswitch_rep *rep)
 		goto err_egdev_cleanup;
 	}
 
+	rep->rep_if[REP_ETH].state = REP_LOADED;
 	return 0;
 
 err_egdev_cleanup:
@@ -1389,6 +1393,8 @@ mlx5e_vport_rep_unload(struct mlx5_eswitch_rep *rep)
 	struct mlx5e_rep_priv *uplink_rpriv;
 	void *ppriv = priv->ppriv;
 	struct mlx5e_priv *upriv;
+
+	rep->rep_if[REP_ETH].state = REP_REGISTERED;
 
 	unregister_netdev(netdev);
 	uplink_rpriv = mlx5_eswitch_get_uplink_priv(priv->mdev->priv.eswitch,

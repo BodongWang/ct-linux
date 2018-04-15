@@ -47,12 +47,14 @@ static const struct mlx5_ib_profile rep_profile = {
 static int
 mlx5_ib_nic_rep_load(struct mlx5_core_dev *dev, struct mlx5_eswitch_rep *rep)
 {
+	rep->rep_if[REP_IB].state = REP_LOADED;
 	return 0;
 }
 
 static void
 mlx5_ib_nic_rep_unload(struct mlx5_eswitch_rep *rep)
 {
+	rep->rep_if[REP_IB].state = REP_REGISTERED;
 	rep->rep_if[REP_IB].priv = NULL;
 }
 
@@ -73,6 +75,7 @@ mlx5_ib_vport_rep_load(struct mlx5_core_dev *dev, struct mlx5_eswitch_rep *rep)
 		return -EINVAL;
 
 	rep->rep_if[REP_IB].priv = ibdev;
+	rep->rep_if[REP_IB].state = REP_LOADED;
 
 	return 0;
 }
@@ -81,6 +84,8 @@ static void
 mlx5_ib_vport_rep_unload(struct mlx5_eswitch_rep *rep)
 {
 	struct mlx5_ib_dev *dev;
+
+	rep->rep_if[REP_IB].state = REP_REGISTERED;
 
 	if (!rep->rep_if[REP_IB].priv)
 		return;
