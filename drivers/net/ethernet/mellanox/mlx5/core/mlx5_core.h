@@ -110,8 +110,8 @@ int mlx5_sriov_attach(struct mlx5_core_dev *dev);
 void mlx5_sriov_detach(struct mlx5_core_dev *dev);
 int mlx5_core_sriov_configure(struct pci_dev *dev, int num_vfs);
 bool mlx5_sriov_is_enabled(struct mlx5_core_dev *dev);
-int mlx5_core_enable_hca(struct mlx5_core_dev *dev, u16 func_id);
-int mlx5_core_disable_hca(struct mlx5_core_dev *dev, u16 func_id);
+int mlx5_core_enable_hca(struct mlx5_core_dev *dev, u16 func_id, bool embedded_cpu_function);
+int mlx5_core_disable_hca(struct mlx5_core_dev *dev, u16 func_id, bool embedded_cpu_function);
 int mlx5_create_scheduling_element_cmd(struct mlx5_core_dev *dev, u8 hierarchy,
 				       void *context, u32 *element_id);
 int mlx5_modify_scheduling_element_cmd(struct mlx5_core_dev *dev, u8 hierarchy,

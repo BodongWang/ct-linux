@@ -131,3 +131,28 @@ void mlx5_ec_cleanup(struct mlx5_core_dev *dev)
 
 	destroy_workqueue(priv->wq);
 }
+
+int mlx5_enable_peer_pf(struct mlx5_core_dev *dev)
+{
+	int err;
+
+	if (!mlx5_core_is_ecpf(dev))
+		return 0;
+
+	err = mlx5_core_enable_hca(dev, 0, 0);
+	if (err)
+		dev_err(&dev->pdev->dev, "enable hca for PF failed\n");
+
+	return err;
+}
+
+void mlx5_clean_peer_pf(struct mlx5_core_dev *dev)
+{
+	if (!mlx5_core_is_ecpf(dev))
+		return;
+
+	if (mlx5_core_disable_hca(dev, 0, 0))
+		dev_warn(&dev->pdev->dev, "%s: disable_hca for PF failed\n", __func__);
+	if (mlx5_wait_for_pages(dev, &dev->priv.peer_pf_pages))
+		dev_warn(&dev->pdev->dev, "%s: timeout reclaiming peer PF pages\n", __func__);
+}

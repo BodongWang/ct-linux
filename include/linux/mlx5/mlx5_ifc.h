@@ -5873,7 +5873,8 @@ struct mlx5_ifc_enable_hca_in_bits {
 	u8         reserved_at_20[0x10];
 	u8         op_mod[0x10];
 
-	u8         reserved_at_40[0x10];
+	u8	   embedded_cpu_function[0x1];
+	u8         reserved_at_41[0xf];
 	u8         function_id[0x10];
 
 	u8         reserved_at_60[0x20];
@@ -5917,7 +5918,8 @@ struct mlx5_ifc_disable_hca_in_bits {
 	u8         reserved_at_20[0x10];
 	u8         op_mod[0x10];
 
-	u8         reserved_at_40[0x10];
+	u8	   embedded_cpu_function[0x1];
+	u8         reserved_at_41[0xf];
 	u8         function_id[0x10];
 
 	u8         reserved_at_60[0x20];

@@ -41,5 +41,7 @@ int mlx5_query_host_params_num_vfs(struct mlx5_core_dev *dev, int *num_vf);
 void mlx5_host_params_update(struct mlx5_core_dev *dev);
 int mlx5_ec_init(struct mlx5_core_dev *dev);
 void mlx5_ec_cleanup(struct mlx5_core_dev *dev);
+int mlx5_enable_peer_pf(struct mlx5_core_dev *dev);
+void mlx5_clean_peer_pf(struct mlx5_core_dev *dev);
 
 #endif /* __MLX5_SMARTNIC_H__ */

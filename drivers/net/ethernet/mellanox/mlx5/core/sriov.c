@@ -100,7 +100,7 @@ static int mlx5_device_enable_sriov(struct mlx5_core_dev *dev, int num_vfs)
 
 enable_vfs_hca:
 	for (vf = 0; vf < num_vfs; vf++) {
-		err = mlx5_core_enable_hca(dev, vf + 1);
+		err = mlx5_core_enable_hca(dev, vf + 1, 0);
 		if (err) {
 			mlx5_core_warn(dev, "failed to enable VF %d (%d)\n", vf, err);
 			continue;
@@ -134,7 +134,7 @@ static void mlx5_device_disable_sriov(struct mlx5_core_dev *dev)
 	for (vf = 0; vf < sriov->num_vfs; vf++) {
 		if (!sriov->vfs_ctx[vf].enabled)
 			continue;
-		err = mlx5_core_disable_hca(dev, vf + 1);
+		err = mlx5_core_disable_hca(dev, vf + 1, 0);
 		if (err) {
 			mlx5_core_warn(dev, "failed to disable VF %d\n", vf);
 			continue;

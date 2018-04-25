@@ -603,23 +603,25 @@ static int mlx5_core_set_hca_defaults(struct mlx5_core_dev *dev)
 	return ret;
 }
 
-int mlx5_core_enable_hca(struct mlx5_core_dev *dev, u16 func_id)
+int mlx5_core_enable_hca(struct mlx5_core_dev *dev, u16 func_id, bool embedded_cpu_function)
 {
 	u32 out[MLX5_ST_SZ_DW(enable_hca_out)] = {0};
 	u32 in[MLX5_ST_SZ_DW(enable_hca_in)]   = {0};
 
 	MLX5_SET(enable_hca_in, in, opcode, MLX5_CMD_OP_ENABLE_HCA);
 	MLX5_SET(enable_hca_in, in, function_id, func_id);
+	MLX5_SET(enable_hca_in, in, embedded_cpu_function, !!embedded_cpu_function);
 	return mlx5_cmd_exec(dev, &in, sizeof(in), &out, sizeof(out));
 }
 
-int mlx5_core_disable_hca(struct mlx5_core_dev *dev, u16 func_id)
+int mlx5_core_disable_hca(struct mlx5_core_dev *dev, u16 func_id, bool embedded_cpu_function)
 {
 	u32 out[MLX5_ST_SZ_DW(disable_hca_out)] = {0};
 	u32 in[MLX5_ST_SZ_DW(disable_hca_in)]   = {0};
 
 	MLX5_SET(disable_hca_in, in, opcode, MLX5_CMD_OP_DISABLE_HCA);
 	MLX5_SET(disable_hca_in, in, function_id, func_id);
+	MLX5_SET(enable_hca_in, in, embedded_cpu_function, !!embedded_cpu_function);
 	return mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
 }
 
@@ -1096,7 +1098,7 @@ static int mlx5_load_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 		goto err_cmd_cleanup;
 	}
 
-	err = mlx5_core_enable_hca(dev, 0);
+	err = mlx5_core_enable_hca(dev, 0, mlx5_core_is_ecpf(dev));
 	if (err) {
 		dev_err(&pdev->dev, "enable hca failed\n");
 		goto err_cmd_cleanup;
@@ -1246,12 +1248,17 @@ static int mlx5_load_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 		goto err_defaults;
 	}
 
-	if (mlx5_core_is_ecpf(dev) && MLX5_ESWITCH_MANAGER(dev)) {
-		err = esw_offloads_start(dev->priv.eswitch);
-		if (err) {
-			dev_err(&pdev->dev, "Failed to start offloads %d\n", err);
-			goto err_offloads;
+	if (mlx5_core_is_ecpf(dev)) {
+		if (MLX5_ESWITCH_MANAGER(dev)) {
+			err = esw_offloads_start(dev->priv.eswitch);
+			if (err) {
+				dev_err(&pdev->dev, "Failed to start offloads %d\n", err);
+				goto err_offloads;
+			}
 		}
+		err = mlx5_enable_peer_pf(dev);
+		if (err)
+			goto err_en_pf;
 	}
 
 	if (mlx5_device_registered(dev)) {
@@ -1271,6 +1278,10 @@ out:
 	return 0;
 
 err_reg_dev:
+	if (mlx5_core_is_ecpf(dev))
+		mlx5_clean_peer_pf(dev);
+
+err_en_pf:
 	if (mlx5_core_is_ecpf(dev) && MLX5_ESWITCH_MANAGER(dev))
 		esw_offloads_stop(dev->priv.eswitch);
 
@@ -1328,7 +1339,7 @@ reclaim_boot_pages:
 	mlx5_reclaim_startup_pages(dev);
 
 err_disable_hca:
-	mlx5_core_disable_hca(dev, 0);
+	mlx5_core_disable_hca(dev, 0, mlx5_core_is_ecpf(dev));
 
 err_cmd_cleanup:
 	mlx5_cmd_cleanup(dev);
@@ -1349,8 +1360,11 @@ static int mlx5_unload_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 		mlx5_drain_health_recovery(dev);
 
 	mlx5_sriov_detach(dev);
-	if (mlx5_core_is_ecpf(dev) && MLX5_ESWITCH_MANAGER(dev))
-		esw_offloads_stop(dev->priv.eswitch);
+	if (mlx5_core_is_ecpf(dev)) {
+		mlx5_clean_peer_pf(dev);
+		if (MLX5_ESWITCH_MANAGER(dev))
+			esw_offloads_stop(dev->priv.eswitch);
+	}
 	mutex_lock(&dev->intf_state_mutex);
 	if (!test_bit(MLX5_INTERFACE_STATE_UP, &dev->intf_state)) {
 		dev_warn(&dev->pdev->dev, "%s: interface is down, NOP\n",
@@ -1387,7 +1401,7 @@ static int mlx5_unload_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 	}
 	mlx5_pagealloc_stop(dev);
 	mlx5_reclaim_startup_pages(dev);
-	mlx5_core_disable_hca(dev, 0);
+	mlx5_core_disable_hca(dev, 0, mlx5_core_is_ecpf(dev));
 	mlx5_cmd_cleanup(dev);
 
 out:
