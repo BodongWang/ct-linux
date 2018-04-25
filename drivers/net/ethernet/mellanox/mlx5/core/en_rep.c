@@ -849,9 +849,18 @@ static int mlx5e_rep_get_phys_port_name(struct net_device *dev,
 	struct mlx5e_priv *priv = netdev_priv(dev);
 	struct mlx5e_rep_priv *rpriv = priv->ppriv;
 	struct mlx5_eswitch_rep *rep = rpriv->rep;
-	int ret;
+	int ret, pf_id;
 
-	ret = snprintf(buf, len, "%d", rep->vport - 1);
+	if (mlx5_lag_is_pfN(priv->mdev, 0))
+		pf_id = 0;
+	else
+		pf_id = 1;
+
+	if (rep->vport == FDB_UPLINK_VPORT)
+		ret = snprintf(buf, len, "p%d", pf_id);
+	else
+		ret = snprintf(buf, len, "pf%dvf%d", pf_id, rep->vport - 1);
+
 	if (ret >= len)
 		return -EOPNOTSUPP;
 
