@@ -462,6 +462,10 @@ static void mlx5_eq_cq_event(struct mlx5_eq *eq, u32 cqn, int event_type)
 	mlx5_cq_put(cq);
 }
 
+enum {
+	EC_FUNCTION_MASK = 0x8000,
+};
+
 static irqreturn_t mlx5_eq_int(int irq, void *eq_ptr)
 {
 	struct mlx5_eq *eq = eq_ptr;
@@ -548,10 +552,11 @@ static irqreturn_t mlx5_eq_int(int irq, void *eq_ptr)
 			{
 				u16 func_id = be16_to_cpu(eqe->data.req_pages.func_id);
 				s32 npages = be32_to_cpu(eqe->data.req_pages.num_pages);
+				bool ec_function = be16_to_cpu(eqe->data.req_pages.ec_function_rsvd) & EC_FUNCTION_MASK;
 
-				mlx5_core_dbg(dev, "page request for func 0x%x, npages %d\n",
-					      func_id, npages);
-				mlx5_core_req_pages_handler(dev, func_id, npages);
+				mlx5_core_dbg(dev, "page request for func 0x%x, npages %d, ec_function %d\n",
+					      func_id, npages, ec_function);
+				mlx5_core_req_pages_handler(dev, func_id, npages, ec_function);
 			}
 			break;
 

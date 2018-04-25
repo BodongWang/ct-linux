@@ -1038,12 +1038,22 @@ static void mlx5_cleanup_once(struct mlx5_core_dev *dev)
 	mlx5_eq_cleanup(dev);
 }
 
+enum {
+	MLX5_ECPU_BIT_NUM = 23,
+};
+
+static bool read_embedded_cpu(struct mlx5_core_dev *dev)
+{
+	return (ioread32be(&dev->iseg->initializing) >> MLX5_ECPU_BIT_NUM) & 1;
+}
+
 static int mlx5_load_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 			 bool boot)
 {
 	struct pci_dev *pdev = dev->pdev;
 	int err;
 
+	dev->embedded_cpu = read_embedded_cpu(dev);
 	mutex_lock(&dev->intf_state_mutex);
 	if (test_bit(MLX5_INTERFACE_STATE_UP, &dev->intf_state)) {
 		dev_warn(&dev->pdev->dev, "%s: interface is up, NOP\n",
