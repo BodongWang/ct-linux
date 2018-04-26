@@ -469,10 +469,19 @@ enum {
 	TCA_FLOWER_KEY_IP_TTL,		/* u8 */
 	TCA_FLOWER_KEY_IP_TTL_MASK,	/* u8 */
 
+	TCA_FLOWER_KEY_CT_STATE,	/* u8 */
+	TCA_FLOWER_KEY_CT_STATE_MASK,	/* u8 */
+
 	__TCA_FLOWER_MAX,
 };
 
 #define TCA_FLOWER_MAX (__TCA_FLOWER_MAX - 1)
+
+/* FIXME: CT_STATE flags; is that the correct place? */
+#define TCA_FLOWER_KEY_CT_FLAGS_NEW               0x01 /* Beginning of a new connection. */
+#define TCA_FLOWER_KEY_CT_FLAGS_ESTABLISHED       0x02 /* Part of an existing connection. */
+#define TCA_FLOWER_KEY_CT_FLAGS_INVALID           0x10 /* Could not track connection. */
+#define TCA_FLOWER_KEY_CT_FLAGS_TRACKED           0x20 /* Conntrack has occurred. */
 
 enum {
 	TCA_FLOWER_KEY_FLAGS_IS_FRAGMENT = (1 << 0),
