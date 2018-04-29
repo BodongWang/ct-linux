@@ -32,6 +32,7 @@
 
 #include <linux/module.h>
 #include <linux/mlx5/driver.h>
+#include <linux/mlx5/eswitch.h>
 #include "mlx5_core.h"
 
 int mlx5_query_host_params_num_vfs(struct mlx5_core_dev *dev, int *num_vf)
@@ -65,4 +66,56 @@ int mlx5_query_host_params_num_vfs(struct mlx5_core_dev *dev, int *num_vf)
 error1:
 	kvfree(out);
 	return err;
+}
+
+static void host_params_handler(struct work_struct *work)
+{
+	struct mlx5_ec_work *ecw = container_of(work, struct mlx5_ec_work, work);
+	struct mlx5_core_dev *dev = ecw->dev;
+	int num_vf;
+	int err;
+
+	if (!mlx5_core_is_ecpf(dev)) {
+		mlx5_core_warn(dev, "invalid ec params event - ignoring\n");
+		return;
+	}
+	if (!MLX5_ESWITCH_MANAGER(dev))
+		return;
+
+	err = mlx5_query_host_params_num_vfs(dev, &num_vf);
+	if (err)
+		mlx5_core_warn(dev, "mlx5_query_host_params_num_vfs failed\n");
+
+	kfree(ecw);
+}
+
+void mlx5_host_params_update(struct mlx5_core_dev *dev)
+{
+	struct mlx5_ec_work *ecw;
+
+	ecw = kzalloc(sizeof(*ecw), GFP_ATOMIC);
+	if (!ecw)
+		return;
+
+	ecw->dev = dev;
+	INIT_WORK(&ecw->work, host_params_handler);
+	queue_work(dev->priv.wq, &ecw->work);
+}
+
+int mlx5_ec_init(struct mlx5_core_dev *dev)
+{
+	struct mlx5_priv *priv = &dev->priv;
+
+	priv->wq = create_singlethread_workqueue("mlx5_generic");
+	if (!priv->wq)
+		return -ENOMEM;
+
+	return 0;
+}
+
+void mlx5_ec_cleanup(struct mlx5_core_dev *dev)
+{
+	struct mlx5_priv *priv = &dev->priv;
+
+	destroy_workqueue(priv->wq);
 }

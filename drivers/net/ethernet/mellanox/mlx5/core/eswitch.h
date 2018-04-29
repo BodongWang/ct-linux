@@ -290,6 +290,11 @@ static inline bool mlx5_eswitch_vlan_actions_supported(struct mlx5_core_dev *dev
 	       MLX5_CAP_ESW_FLOWTABLE_FDB(dev, push_vlan);
 }
 
+static inline bool mlx5_ecpf_vport_exists(struct mlx5_core_dev *dev)
+{
+	return MLX5_CAP_ESW(dev, ecpf_vport_exists);
+}
+
 #define MLX5_DEBUG_ESWITCH_MASK BIT(3)
 
 #define esw_info(dev, format, ...)				\
@@ -307,6 +312,7 @@ static inline void mlx5_eswitch_cleanup(struct mlx5_eswitch *esw) {}
 static inline void mlx5_eswitch_vport_event(struct mlx5_eswitch *esw, struct mlx5_eqe *eqe) {}
 static inline int  mlx5_eswitch_enable_sriov(struct mlx5_eswitch *esw, int nvfs, int mode) { return 0; }
 static inline void mlx5_eswitch_disable_sriov(struct mlx5_eswitch *esw) {}
+static inline bool mlx5_ecpf_vport_exists(struct mlx5_core_dev *dev) {return false; }
 #endif /* CONFIG_MLX5_ESWITCH */
 
 #endif /* __MLX5_ESWITCH_H__ */

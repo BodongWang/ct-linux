@@ -37,6 +37,9 @@
 #include <linux/mlx5/driver.h>
 #include "mlx5_core.h"
 
-int mlx5_query_ec_params_num_vfs(struct mlx5_core_dev *dev, int *num_vf);
+int mlx5_query_host_params_num_vfs(struct mlx5_core_dev *dev, int *num_vf);
+void mlx5_host_params_update(struct mlx5_core_dev *dev);
+int mlx5_ec_init(struct mlx5_core_dev *dev);
+void mlx5_ec_cleanup(struct mlx5_core_dev *dev);
 
 #endif /* __MLX5_SMARTNIC_H__ */

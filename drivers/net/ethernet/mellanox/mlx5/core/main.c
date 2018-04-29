@@ -64,6 +64,7 @@
 #include "lib/clock.h"
 #include "lib/vxlan.h"
 #include "diag/fw_tracer.h"
+#include "smartnic.h"
 
 MODULE_AUTHOR("Eli Cohen <eli@mellanox.com>");
 MODULE_DESCRIPTION("Mellanox 5th generation network adapters (ConnectX series) core driver");
@@ -1192,6 +1193,11 @@ static int mlx5_load_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 		goto err_fw_tracer;
 	}
 
+	if (mlx5_ec_init(dev)) {
+		err = -ENOMEM;
+		goto err_ec;
+	}
+
 	err = alloc_comp_eqs(dev);
 	if (err) {
 		dev_err(&pdev->dev, "Failed to alloc completion EQs\n");
@@ -1278,6 +1284,9 @@ err_affinity_hints:
 	free_comp_eqs(dev);
 
 err_comp_eqs:
+	mlx5_ec_cleanup(dev);
+
+err_ec:
 	mlx5_fw_tracer_cleanup(dev->tracer);
 
 err_fw_tracer:
@@ -1348,6 +1357,7 @@ static int mlx5_unload_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 	mlx5_fpga_device_stop(dev);
 	mlx5_irq_clear_affinity_hints(dev);
 	free_comp_eqs(dev);
+	mlx5_ec_cleanup(dev);
 	mlx5_fw_tracer_cleanup(dev->tracer);
 	mlx5_stop_eqs(dev);
 	mlx5_put_uars_page(dev, priv->uar);

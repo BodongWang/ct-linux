@@ -41,6 +41,7 @@
 #include "fpga/core.h"
 #include "eswitch.h"
 #include "diag/fw_tracer.h"
+#include "smartnic.h"
 
 enum {
 	MLX5_EQE_SIZE		= sizeof(struct mlx5_eqe),
@@ -155,8 +156,8 @@ static const char *eqe_type_str(u8 type)
 		return "MLX5_EVENT_TYPE_STALL_EVENT";
 	case MLX5_EVENT_TYPE_CMD:
 		return "MLX5_EVENT_TYPE_CMD";
-	case MLX5_EVENT_EC_PARAMS_CHANGE:
-		return "MLX5_EVENT_EC_PARAMS_CHANGE";
+	case MLX5_EVENT_HOST_PARAMS_CHANGE:
+		return "MLX5_EVENT_HOST_PARAMS_CHANGE";
 	case MLX5_EVENT_TYPE_PAGE_REQUEST:
 		return "MLX5_EVENT_TYPE_PAGE_REQUEST";
 	case MLX5_EVENT_TYPE_PAGE_FAULT:
@@ -591,6 +592,10 @@ static irqreturn_t mlx5_eq_int(int irq, void *eq_ptr)
 			mlx5_fw_tracer_event(dev, eqe);
 			break;
 
+		case MLX5_EVENT_HOST_PARAMS_CHANGE:
+			mlx5_host_params_update(dev);
+			break;
+
 		default:
 			mlx5_core_warn(dev, "Unhandled event 0x%x on EQ 0x%x\n",
 				       eqe->type, eq->eqn);
@@ -870,6 +875,9 @@ int mlx5_start_eqs(struct mlx5_core_dev *dev)
 
 	if (MLX5_CAP_MCAM_REG(dev, tracer_registers))
 		async_event_mask |= (1ull << MLX5_EVENT_TYPE_DEVICE_TRACER);
+
+	if (mlx5_core_is_ecpf(dev))
+		async_event_mask |= (1ull << MLX5_EVENT_HOST_PARAMS_CHANGE);
 
 	err = mlx5_create_map_eq(dev, &table->cmd_eq, MLX5_EQ_VEC_CMD,
 				 MLX5_NUM_CMD_EQE, 1ull << MLX5_EVENT_TYPE_CMD,
