@@ -312,6 +312,9 @@ static int fl_hw_replace_filter(struct tcf_proto *tp,
 	cls_flower.exts = &f->exts;
 	cls_flower.classid = f->res.classid;
 
+	cls_flower.ct_state_key = cls_flower.key->ct_state;
+	cls_flower.ct_state_mask = cls_flower.mask->ct_state;
+
 	err = tc_setup_cb_call(block, &f->exts, TC_SETUP_CLSFLOWER,
 			       &cls_flower, skip_sw);
 	if (err < 0) {
@@ -1041,6 +1044,14 @@ static int fl_change(struct net *net, struct sk_buff *in_skb,
 					     fnew->mask->filter_ht_params);
 		if (err)
 			goto errout_mask;
+	}
+
+	{
+		struct fl_flow_key *key = &mask.key;
+		struct fl_flow_key *mask = &fnew->mkey;
+
+		printk("[yk] fl_change: hardware view ct: key: key->ct_state: %X, mask->ct_state: %X\n",
+			key->ct_state, mask->ct_state);
 	}
 
 	if (!tc_skip_hw(fnew->flags)) {

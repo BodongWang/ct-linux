@@ -44,6 +44,7 @@
 #include <net/tc_act/tc_tunnel_key.h>
 #include <net/tc_act/tc_pedit.h>
 #include <net/tc_act/tc_csum.h>
+#include <net/tc_act/tc_ct.h>
 #include <net/vxlan.h>
 #include <net/arp.h>
 #include "en.h"
@@ -1568,6 +1569,17 @@ static int parse_cls_flower(struct mlx5e_priv *priv,
 	u8 match_level;
 	int err;
 
+#define CT_STATE_MATCH(flags) ((f->ct_state_key & f->ct_state_mask) == (flags))
+
+	/* Allow only -trk and +trk+est only */
+	if (!(CT_STATE_MATCH(0) ||
+	      CT_STATE_MATCH(TCA_FLOWER_KEY_CT_FLAGS_TRACKED |
+			     TCA_FLOWER_KEY_CT_FLAGS_ESTABLISHED))) {
+		netdev_warn(priv->netdev, "Unsupported ct_state used: key/mask: %x/%x\n",
+			    f->ct_state_key, f->ct_state_mask);
+		return -EOPNOTSUPP;
+	}
+
 	err = __parse_cls_flower(priv, spec, f, &match_level);
 
 	if (!err && (flow->flags & MLX5E_TC_FLOW_ESWITCH)) {
@@ -2734,6 +2746,11 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 	err = parse_cls_flower(priv, flow, &parse_attr->spec, f);
 	if (err < 0)
 		goto err_free;
+
+	if (CT_STATE_MATCH(TCA_FLOWER_KEY_CT_FLAGS_TRACKED |
+			   TCA_FLOWER_KEY_CT_FLAGS_ESTABLISHED)) {
+		printk("[yk] We are trying to offload +trk+est rule\n");
+	}
 
 	if (flow->flags & MLX5E_TC_FLOW_ESWITCH) {
 		err = parse_tc_fdb_actions(priv, f->exts, parse_attr, flow);
