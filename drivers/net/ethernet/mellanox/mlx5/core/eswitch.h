@@ -305,6 +305,23 @@ static inline bool mlx5_ecpf_vport_exists(struct mlx5_core_dev *dev)
 
 #define esw_debug(dev, format, ...)				\
 	mlx5_core_dbg_mask(dev, MLX5_DEBUG_ESWITCH_MASK, format, ##__VA_ARGS__)
+
+static inline int mlx5_vport_num_to_index(struct mlx5_eswitch *esw, u16 vport_num)
+{
+	if (vport_num == FDB_UPLINK_VPORT)
+		return mlx5_uplink_rep_idx(esw->dev);
+
+	return vport_num;
+}
+
+static inline int mlx5_rep_idx2vport_num(struct mlx5_eswitch *esw, int i)
+{
+	if (i == mlx5_uplink_rep_idx(esw->dev))
+		return FDB_UPLINK_VPORT;
+
+	return i;
+}
+
 #else  /* CONFIG_MLX5_ESWITCH */
 /* eswitch API stubs */
 static inline int  mlx5_eswitch_init(struct mlx5_core_dev *dev) { return 0; }
@@ -313,6 +330,8 @@ static inline void mlx5_eswitch_vport_event(struct mlx5_eswitch *esw, struct mlx
 static inline int  mlx5_eswitch_enable_sriov(struct mlx5_eswitch *esw, int nvfs, int mode) { return 0; }
 static inline void mlx5_eswitch_disable_sriov(struct mlx5_eswitch *esw) {}
 static inline bool mlx5_ecpf_vport_exists(struct mlx5_core_dev *dev) {return false; }
+static inline int mlx5_vport_num_to_index(struct mlx5_eswitch *esw, u16 vport_num) {return 0; }
+static inline int mlx5_rep_idx2vport_num(struct mlx5_eswitch *esw, int i) {return 0; }
 #endif /* CONFIG_MLX5_ESWITCH */
 
 #endif /* __MLX5_ESWITCH_H__ */
