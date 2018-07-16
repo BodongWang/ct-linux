@@ -896,6 +896,7 @@ struct mlx5_ib_dev {
 	struct list_head	ib_dev_list;
 	u64			sys_image_guid;
 	struct mlx5_memic	memic;
+	int			num_vf;
 };
 
 static inline struct mlx5_ib_cq *to_mibcq(struct mlx5_core_cq *mcq)

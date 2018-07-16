@@ -54,7 +54,7 @@ mlx5_ib_nic_rep_load(struct mlx5_core_dev *dev, struct mlx5_eswitch_rep *rep)
 static void
 mlx5_ib_nic_rep_unload(struct mlx5_eswitch_rep *rep)
 {
-	rep->rep_if[REP_IB].state = REP_REGISTERED;
+	rep->rep_if[REP_IB].state = REP_ENABLED;
 	rep->rep_if[REP_IB].priv = NULL;
 }
 
@@ -85,7 +85,7 @@ mlx5_ib_vport_rep_unload(struct mlx5_eswitch_rep *rep)
 {
 	struct mlx5_ib_dev *dev;
 
-	rep->rep_if[REP_IB].state = REP_REGISTERED;
+	rep->rep_if[REP_IB].state = REP_ENABLED;
 
 	if (!rep->rep_if[REP_IB].priv)
 		return;
@@ -103,27 +103,25 @@ static void *mlx5_ib_vport_get_proto_dev(struct mlx5_eswitch_rep *rep)
 static void mlx5_ib_rep_register_vf_vports(struct mlx5_ib_dev *dev)
 {
 	struct mlx5_eswitch *esw   = dev->mdev->priv.eswitch;
-	int total_vfs = MLX5_TOTAL_VPORTS(dev->mdev);
-	int vport;
+	int i;
 
-	for (vport = 1; vport < total_vfs; vport++) {
+	for (i = 0; i < mlx5_uplink_rep_idx(dev->mdev); i++) {
 		struct mlx5_eswitch_rep_if rep_if = {};
 
 		rep_if.load = mlx5_ib_vport_rep_load;
 		rep_if.unload = mlx5_ib_vport_rep_unload;
 		rep_if.get_proto_dev = mlx5_ib_vport_get_proto_dev;
-		mlx5_eswitch_register_vport_rep(esw, vport, &rep_if, REP_IB);
+		mlx5_eswitch_register_vport_rep(esw, i, &rep_if, REP_IB);
 	}
 }
 
 static void mlx5_ib_rep_unregister_vf_vports(struct mlx5_ib_dev *dev)
 {
 	struct mlx5_eswitch *esw   = dev->mdev->priv.eswitch;
-	int total_vfs = MLX5_TOTAL_VPORTS(dev->mdev);
-	int vport;
+	int i;
 
-	for (vport = 1; vport < total_vfs; vport++)
-		mlx5_eswitch_unregister_vport_rep(esw, vport, REP_IB);
+	for (i = mlx5_ecpf_rep_idx(dev->mdev); i >= 0; i--)
+		mlx5_eswitch_unregister_vport_rep(esw, i, REP_IB);
 }
 
 void mlx5_ib_register_vport_reps(struct mlx5_ib_dev *dev)
@@ -136,17 +134,42 @@ void mlx5_ib_register_vport_reps(struct mlx5_ib_dev *dev)
 	rep_if.get_proto_dev = mlx5_ib_vport_get_proto_dev;
 	rep_if.priv = dev;
 
-	mlx5_eswitch_register_vport_rep(esw, 0, &rep_if, REP_IB);
+	mlx5_eswitch_register_vport_rep(esw, mlx5_uplink_rep_idx(dev->mdev), &rep_if, REP_IB);
 
 	mlx5_ib_rep_register_vf_vports(dev);
 }
 
+void mlx5_ib_enable_vport_reps(struct mlx5_ib_dev *dev)
+{
+	struct mlx5_eswitch *esw = dev->mdev->priv.eswitch;
+
+	esw_offloads_enable_reps_type(esw, dev->mdev->priv.sriov.num_vfs, REP_IB);
+}
+
+void mlx5_ib_load_vport_reps(struct mlx5_ib_dev *dev)
+{
+	struct mlx5_eswitch *esw = dev->mdev->priv.eswitch;
+
+	esw_offloads_load_reps_type(esw, REP_IB);
+}
+
 void mlx5_ib_unregister_vport_reps(struct mlx5_ib_dev *dev)
+{
+	mlx5_ib_rep_unregister_vf_vports(dev);
+}
+
+void mlx5_ib_unload_vport_reps(struct mlx5_ib_dev *dev)
 {
 	struct mlx5_eswitch *esw   = dev->mdev->priv.eswitch;
 
-	mlx5_ib_rep_unregister_vf_vports(dev); /* VFs vports */
-	mlx5_eswitch_unregister_vport_rep(esw, 0, REP_IB); /* UPLINK PF*/
+	esw_offloads_unload_reps_type(esw, REP_IB);
+}
+
+void mlx5_ib_disable_vport_reps(struct mlx5_ib_dev *dev)
+{
+	struct mlx5_eswitch *esw = dev->mdev->priv.eswitch;
+
+	esw_offloads_disable_reps_type(esw, dev->num_vf, REP_IB);
 }
 
 u8 mlx5_ib_eswitch_mode(struct mlx5_eswitch *esw)
@@ -155,15 +178,15 @@ u8 mlx5_ib_eswitch_mode(struct mlx5_eswitch *esw)
 }
 
 struct mlx5_ib_dev *mlx5_ib_get_rep_ibdev(struct mlx5_eswitch *esw,
-					  int vport_index)
+					  int vport)
 {
-	return mlx5_eswitch_get_proto_dev(esw, vport_index, REP_IB);
+	return mlx5_eswitch_get_proto_dev(esw, vport, REP_IB);
 }
 
 struct net_device *mlx5_ib_get_rep_netdev(struct mlx5_eswitch *esw,
-					  int vport_index)
+					  int vport)
 {
-	return mlx5_eswitch_get_proto_dev(esw, vport_index, REP_ETH);
+	return mlx5_eswitch_get_proto_dev(esw, vport, REP_ETH);
 }
 
 struct mlx5_ib_dev *mlx5_ib_get_uplink_ibdev(struct mlx5_eswitch *esw)

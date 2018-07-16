@@ -52,6 +52,7 @@
 #include <linux/mlx5/port.h>
 #include <linux/mlx5/vport.h>
 #include <linux/mlx5/fs.h>
+#include <linux/mlx5/eswitch.h>
 #include <linux/list.h>
 #include <rdma/ib_smi.h>
 #include <rdma/ib_umem.h>
@@ -3857,6 +3858,43 @@ static int init_node_data(struct mlx5_ib_dev *dev)
 	return mlx5_query_node_guid(dev, &dev->ib_dev.node_guid);
 }
 
+static ssize_t show_rep_state(struct device *device, struct device_attribute *attr,
+			      char *buf)
+{
+	struct mlx5_ib_dev *dev =
+		container_of(device, struct mlx5_ib_dev, ib_dev.dev);
+	int state;
+
+	if (!dev->rep)
+		return sprintf(buf, "not a representor\n");
+
+	state = dev->rep->rep_if[REP_IB].state;
+	return sprintf(buf, "%s\n", mlx5_rep_state_str(state));
+}
+
+static ssize_t show_rep_vport(struct device *device,
+			      struct device_attribute *attr,
+			      char *buf)
+{
+	struct mlx5_ib_dev *dev =
+		container_of(device, struct mlx5_ib_dev, ib_dev.dev);
+
+	if (!dev->rep) {
+		strcpy(buf, "not a representor\n");
+		return strlen("not a representor\n");
+	}
+
+	switch (dev->rep->vport) {
+	case 0xffff:
+		strcpy(buf, "uplink\n");
+		return strlen("uplink\n");
+	case 0xfffe:
+		strcpy(buf, "ecpf\n");
+		return strlen("ecpf\n");
+	default:
+		return sprintf(buf, "0x%x\n", dev->rep->vport);
+	}
+}
 static ssize_t show_fw_pages(struct device *device, struct device_attribute *attr,
 			     char *buf)
 {
@@ -3905,6 +3943,8 @@ static DEVICE_ATTR(hca_type, S_IRUGO, show_hca,    NULL);
 static DEVICE_ATTR(board_id, S_IRUGO, show_board,  NULL);
 static DEVICE_ATTR(fw_pages, S_IRUGO, show_fw_pages, NULL);
 static DEVICE_ATTR(reg_pages, S_IRUGO, show_reg_pages, NULL);
+static DEVICE_ATTR(rep_state, S_IRUGO, show_rep_state, NULL);
+static DEVICE_ATTR(rep_vport, S_IRUGO, show_rep_vport, NULL);
 
 static struct device_attribute *mlx5_class_attributes[] = {
 	&dev_attr_hw_rev,
@@ -3912,6 +3952,8 @@ static struct device_attribute *mlx5_class_attributes[] = {
 	&dev_attr_board_id,
 	&dev_attr_fw_pages,
 	&dev_attr_reg_pages,
+	&dev_attr_rep_state,
+	&dev_attr_rep_vport,
 };
 
 static void pkey_change_handler(struct work_struct *work)
@@ -5892,12 +5934,17 @@ int mlx5_ib_stage_class_attr_init(struct mlx5_ib_dev *dev)
 static int mlx5_ib_stage_rep_reg_init(struct mlx5_ib_dev *dev)
 {
 	mlx5_ib_register_vport_reps(dev);
+	mlx5_ib_enable_vport_reps(dev);
+	mlx5_ib_load_vport_reps(dev);
 
 	return 0;
 }
 
 static void mlx5_ib_stage_rep_reg_cleanup(struct mlx5_ib_dev *dev)
 {
+	mlx5_ib_warn(dev, "\n");
+	mlx5_ib_unload_vport_reps(dev);
+	mlx5_ib_disable_vport_reps(dev);
 	mlx5_ib_unregister_vport_reps(dev);
 }
 
@@ -6115,7 +6162,8 @@ static void *mlx5_ib_add(struct mlx5_core_dev *mdev)
 
 	if (MLX5_ESWITCH_MANAGER(mdev) &&
 	    mlx5_ib_eswitch_mode(mdev->priv.eswitch) == SRIOV_OFFLOADS) {
-		dev->rep = mlx5_ib_vport_rep(mdev->priv.eswitch, 0);
+		dev->rep = mlx5_ib_vport_rep(mdev->priv.eswitch, FDB_UPLINK_VPORT);
+		dev->num_vf = dev->mdev->priv.sriov.num_vfs;
 
 		return __mlx5_ib_add(dev, &nic_rep_profile);
 	}
