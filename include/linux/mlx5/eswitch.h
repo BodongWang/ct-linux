@@ -25,8 +25,29 @@ enum {
 enum {
 	REP_UNREGISTERED,
 	REP_REGISTERED,
+	REP_ENABLED,
 	REP_LOADED,
 };
+
+static inline const char *mlx5_rep_state_str(int state)
+{
+	switch (state) {
+	case REP_UNREGISTERED: return "REP_UNREGISTERED";
+	case REP_REGISTERED: return "REP_REGISTERED";
+	case REP_ENABLED: return "REP_ENABLED";
+	case REP_LOADED: return "REP_LOADED";
+	}
+	return "Invalid rep state";
+}
+
+static inline const char *mlx5_rep_type_str(int type)
+{
+	switch (type) {
+	case REP_ETH: return "ETH";
+	case REP_IB: return "IB";
+	}
+	return "Invalid rep type";
+}
 
 struct mlx5_eswitch_rep;
 struct mlx5_eswitch_rep_if {

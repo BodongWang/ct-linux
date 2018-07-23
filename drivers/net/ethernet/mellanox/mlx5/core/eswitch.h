@@ -181,6 +181,8 @@ struct mlx5_eswitch {
 
 	struct mlx5_esw_offload offloads;
 	int                     mode;
+	/* serialize representors states transitions */
+	struct mutex		modify_mtx;
 };
 
 void esw_offloads_cleanup(struct mlx5_eswitch *esw, int nvports);
