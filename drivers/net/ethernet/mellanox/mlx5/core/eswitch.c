@@ -369,6 +369,14 @@ static void esw_destroy_legacy_fdb_table(struct mlx5_eswitch *esw)
 	esw->fdb_table.legacy.promisc_grp = NULL;
 }
 
+static bool is_eswitch_manager_vport(struct mlx5_eswitch *esw, u32 vport)
+{
+	if (mlx5_core_is_ecpf(esw->dev))
+		return vport == ECPF_ESW_PORT_NUMBER;
+
+	return !vport;
+}
+
 /* E-Switch vport UC/MC lists management */
 typedef int (*vport_addr_action)(struct mlx5_eswitch *esw,
 				 struct vport_addr *vaddr);
@@ -379,16 +387,16 @@ static int esw_add_uc_addr(struct mlx5_eswitch *esw, struct vport_addr *vaddr)
 	u32 vport = vaddr->vport;
 	int err;
 
-	/* Skip mlx5_mpfs_add_mac for PFs,
-	 * it is already done by the PF netdev in mlx5e_execute_l2_action
+	/* Skip mlx5_mpfs_add_mac for eswitch_managers,
+	 * it is already done by its netdev in mlx5e_execute_l2_action
 	 */
-	if (!vport)
+	if (is_eswitch_manager_vport(esw, vport))
 		goto fdb_add;
 
 	err = mlx5_mpfs_add_mac(esw->dev, mac);
 	if (err) {
 		esw_warn(esw->dev,
-			 "Failed to add L2 table mac(%pM) for vport(%d), err(%d)\n",
+			 "Failed to add L2 table mac(%pM) for vport(0x%x), err(%d)\n",
 			 mac, vport, err);
 		return err;
 	}
@@ -411,10 +419,10 @@ static int esw_del_uc_addr(struct mlx5_eswitch *esw, struct vport_addr *vaddr)
 	u32 vport = vaddr->vport;
 	int err = 0;
 
-	/* Skip mlx5_mpfs_del_mac for PFs,
-	 * it is already done by the PF netdev in mlx5e_execute_l2_action
+	/* Skip mlx5_mpfs_del_mac for eswitch managerss,
+	 * it is already done by its netdev in mlx5e_execute_l2_action
 	 */
-	if (!vport || !vaddr->mpfs)
+	if (is_eswitch_manager_vport(esw, vport) || !vaddr->mpfs)
 		goto fdb_del;
 
 	err = mlx5_mpfs_del_mac(esw->dev, mac);
@@ -422,6 +430,7 @@ static int esw_del_uc_addr(struct mlx5_eswitch *esw, struct vport_addr *vaddr)
 		esw_warn(esw->dev,
 			 "Failed to del L2 table mac(%pM) for vport(%d), err(%d)\n",
 			 mac, vport, err);
+
 	vaddr->mpfs = false;
 
 fdb_del:

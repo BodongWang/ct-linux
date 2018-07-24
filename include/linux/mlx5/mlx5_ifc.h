@@ -9296,4 +9296,8 @@ struct mlx5_ifc_query_host_params_out_bits {
 	u8         reserved_at_280[0x180];
 };
 
+enum {
+	ECPF_ESW_PORT_NUMBER = 0xfffe
+};
+
 #endif /* MLX5_IFC_H */
