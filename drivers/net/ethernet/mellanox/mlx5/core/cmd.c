@@ -312,6 +312,7 @@ static int mlx5_internal_err_ret_value(struct mlx5_core_dev *dev, u16 op,
 	case MLX5_CMD_OP_DEALLOC_MODIFY_HEADER_CONTEXT:
 	case MLX5_CMD_OP_FPGA_DESTROY_QP:
 	case MLX5_CMD_OP_DESTROY_GENERAL_OBJECT:
+	case MLX5_CMD_OP_QUERY_HOST_PARAMS:
 		return MLX5_CMD_STAT_OK;
 
 	case MLX5_CMD_OP_QUERY_HCA_CAP:
@@ -611,6 +612,7 @@ const char *mlx5_command_str(int command)
 	MLX5_COMMAND_STR_CASE(ARM_XRQ);
 	MLX5_COMMAND_STR_CASE(CREATE_GENERAL_OBJECT);
 	MLX5_COMMAND_STR_CASE(DESTROY_GENERAL_OBJECT);
+	MLX5_COMMAND_STR_CASE(QUERY_HOST_PARAMS);
 	default: return "unknown command opcode";
 	}
 }
