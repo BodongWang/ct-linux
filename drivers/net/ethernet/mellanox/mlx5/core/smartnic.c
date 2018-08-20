@@ -79,6 +79,7 @@ static void host_params_handler(struct work_struct *work)
 		mlx5_core_warn(dev, "invalid ec params event - ignoring\n");
 		return;
 	}
+
 	if (!MLX5_ESWITCH_MANAGER(dev))
 		return;
 

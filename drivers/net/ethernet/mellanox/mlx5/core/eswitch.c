@@ -1477,20 +1477,37 @@ static void node_guid_gen_from_mac(u64 *node_guid, u8 mac[ETH_ALEN])
 	((u8 *)node_guid)[0] = mac[5];
 }
 
+static bool is_privileged_vport(struct mlx5_eswitch *esw, u16 vport)
+{
+	if (mlx5_core_is_ecpf(esw->dev) && vport == ECPF_ESW_PORT_NUMBER)
+		return true;
+
+	if (!mlx5_core_is_ecpf(esw->dev) && !vport)
+		return true;
+
+	return false;
+}
+
 static void esw_apply_vport_conf(struct mlx5_eswitch *esw,
 				 struct mlx5_vport *vport)
 {
 	int vport_num = vport->vport;
 
-	if (!vport_num)
+	if (!is_privileged_vport(esw, vport_num))
+		mlx5_modify_vport_admin_state(esw->dev,
+					      MLX5_QUERY_VPORT_STATE_IN_OP_MOD_ESW_VPORT,
+					      vport_num,
+					      vport->info.link_state);
+
+	/* PF and ECPF ports have firmware assgined MACs and GUIDs */
+	if (vport_num && vport_num != ECPF_ESW_PORT_NUMBER) {
+		mlx5_modify_nic_vport_mac_address(esw->dev, vport_num, vport->info.mac);
+		mlx5_modify_nic_vport_node_guid(esw->dev, vport_num, vport->info.node_guid);
+	}
+
+	if (!is_privileged_vport(esw, vport_num))
 		return;
 
-	mlx5_modify_vport_admin_state(esw->dev,
-				      MLX5_QUERY_VPORT_STATE_IN_OP_MOD_ESW_VPORT,
-				      vport_num,
-				      vport->info.link_state);
-	mlx5_modify_nic_vport_mac_address(esw->dev, vport_num, vport->info.mac);
-	mlx5_modify_nic_vport_node_guid(esw->dev, vport_num, vport->info.node_guid);
 	modify_esw_vport_cvlan(esw->dev, vport_num, vport->info.vlan, vport->info.qos,
 			       (vport->info.vlan || vport->info.qos));
 
@@ -1563,8 +1580,7 @@ static void esw_enable_vport(struct mlx5_eswitch *esw, int vport_num,
 	vport->enabled_events = enable_events;
 	vport->enabled = true;
 
-	/* only PF is trusted by default */
-	if (!vport_num)
+	if (is_privileged_vport(esw, vport_num))
 		vport->info.trusted = true;
 
 	esw_vport_change_handle_locked(vport);
