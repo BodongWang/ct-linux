@@ -574,7 +574,8 @@ static int esw_del_mc_addr(struct mlx5_eswitch *esw, struct vport_addr *vaddr)
 static void esw_apply_vport_addr_list(struct mlx5_eswitch *esw,
 				      u16 vport_num, int list_type)
 {
-	struct mlx5_vport *vport = &esw->vports[vport_num];
+	int vport_idx = mlx5_vport_num_to_index(esw, vport_num);
+	struct mlx5_vport *vport = &esw->vports[vport_idx];
 	bool is_uc = list_type == MLX5_NVPRT_LIST_TYPE_UC;
 	vport_addr_action vport_addr_add;
 	vport_addr_action vport_addr_del;
@@ -609,7 +610,8 @@ static void esw_apply_vport_addr_list(struct mlx5_eswitch *esw,
 static void esw_update_vport_addr_list(struct mlx5_eswitch *esw,
 				       u16 vport_num, int list_type)
 {
-	struct mlx5_vport *vport = &esw->vports[vport_num];
+	int vport_idx = mlx5_vport_num_to_index(esw, vport_num);
+	struct mlx5_vport *vport = &esw->vports[vport_idx];
 	bool is_uc = list_type == MLX5_NVPRT_LIST_TYPE_UC;
 	u8 (*mac_list)[ETH_ALEN];
 	struct l2addr_node *node;
@@ -696,7 +698,8 @@ out:
  */
 static void esw_update_vport_mc_promisc(struct mlx5_eswitch *esw, u16 vport_num)
 {
-	struct mlx5_vport *vport = &esw->vports[vport_num];
+	int vport_idx = mlx5_vport_num_to_index(esw, vport_num);
+	struct mlx5_vport *vport = &esw->vports[vport_idx];
 	struct l2addr_node *node;
 	struct vport_addr *addr;
 	struct hlist_head *hash;
@@ -733,7 +736,8 @@ static void esw_apply_vport_rx_mode(struct mlx5_eswitch *esw, u16 vport_num,
 				    bool promisc, bool mc_promisc)
 {
 	struct esw_mc_addr *allmulti_addr = &esw->mc_promisc;
-	struct mlx5_vport *vport = &esw->vports[vport_num];
+	int vport_idx = mlx5_vport_num_to_index(esw, vport_num);
+	struct mlx5_vport *vport = &esw->vports[vport_idx];
 
 	if (IS_ERR_OR_NULL(vport->allmulti_rule) != mc_promisc)
 		goto promisc;
@@ -774,7 +778,8 @@ promisc:
 /* Sync vport rx mode from vport context */
 static void esw_update_vport_rx_mode(struct mlx5_eswitch *esw, u16 vport_num)
 {
-	struct mlx5_vport *vport = &esw->vports[vport_num];
+	int vport_idx = mlx5_vport_num_to_index(esw, vport_num);
+	struct mlx5_vport *vport = &esw->vports[vport_idx];
 	int promisc_all = 0;
 	int promisc_uc = 0;
 	int promisc_mc = 0;
@@ -1359,7 +1364,8 @@ static int esw_vport_enable_qos(struct mlx5_eswitch *esw, int vport_num,
 				u32 initial_max_rate, u32 initial_bw_share)
 {
 	u32 sched_ctx[MLX5_ST_SZ_DW(scheduling_context)] = {0};
-	struct mlx5_vport *vport = &esw->vports[vport_num];
+	int vport_idx = mlx5_vport_num_to_index(esw, vport_num);
+	struct mlx5_vport *vport = &esw->vports[vport_idx];
 	struct mlx5_core_dev *dev = esw->dev;
 	void *vport_elem;
 	int err = 0;
@@ -1398,7 +1404,8 @@ static int esw_vport_enable_qos(struct mlx5_eswitch *esw, int vport_num,
 
 static void esw_vport_disable_qos(struct mlx5_eswitch *esw, int vport_num)
 {
-	struct mlx5_vport *vport = &esw->vports[vport_num];
+	int vport_idx = mlx5_vport_num_to_index(esw, vport_num);
+	struct mlx5_vport *vport = &esw->vports[vport_idx];
 	int err = 0;
 
 	if (!vport->qos.enabled)
@@ -1418,7 +1425,8 @@ static int esw_vport_qos_config(struct mlx5_eswitch *esw, int vport_num,
 				u32 max_rate, u32 bw_share)
 {
 	u32 sched_ctx[MLX5_ST_SZ_DW(scheduling_context)] = {0};
-	struct mlx5_vport *vport = &esw->vports[vport_num];
+	int vport_idx = mlx5_vport_num_to_index(esw, vport_num);
+	struct mlx5_vport *vport = &esw->vports[vport_idx];
 	struct mlx5_core_dev *dev = esw->dev;
 	void *vport_elem;
 	u32 bitmask = 0;
@@ -1531,7 +1539,8 @@ static void esw_vport_destroy_drop_counters(struct mlx5_vport *vport)
 static void esw_enable_vport(struct mlx5_eswitch *esw, int vport_num,
 			     int enable_events)
 {
-	struct mlx5_vport *vport = &esw->vports[vport_num];
+	int vport_idx = mlx5_vport_num_to_index(esw, vport_num);
+	struct mlx5_vport *vport = &esw->vports[vport_idx];
 
 	mutex_lock(&esw->state_lock);
 	WARN_ON(vport->enabled);
@@ -1565,9 +1574,10 @@ static void esw_enable_vport(struct mlx5_eswitch *esw, int vport_num,
 	mutex_unlock(&esw->state_lock);
 }
 
-static void esw_disable_vport(struct mlx5_eswitch *esw, int vport_num)
+static void esw_disable_vport(struct mlx5_eswitch *esw, int vport_idx)
 {
-	struct mlx5_vport *vport = &esw->vports[vport_num];
+	struct mlx5_vport *vport = &esw->vports[vport_idx];
+	u16 vport_num = vport->vport;
 
 	if (!vport->enabled)
 		return;
@@ -1702,7 +1712,7 @@ int mlx5_eswitch_init(struct mlx5_core_dev *dev)
 {
 	int total_vports = MLX5_TOTAL_VPORTS(dev);
 	struct mlx5_eswitch *esw;
-	int vport_num;
+	int i;
 	int err;
 
 	if (!MLX5_VPORT_MANAGER(dev))
@@ -1742,10 +1752,10 @@ int mlx5_eswitch_init(struct mlx5_core_dev *dev)
 	hash_init(esw->offloads.mod_hdr_tbl);
 	mutex_init(&esw->state_lock);
 
-	for (vport_num = 0; vport_num < total_vports; vport_num++) {
-		struct mlx5_vport *vport = &esw->vports[vport_num];
+	for (i = 0; i < total_vports; i++) {
+		struct mlx5_vport *vport = &esw->vports[i];
 
-		vport->vport = vport_num;
+		vport->vport = mlx5_rep_idx2vport_num(esw, i);
 		vport->info.link_state = MLX5_ESW_VPORT_ADMIN_STATE_AUTO;
 		vport->dev = dev;
 		INIT_WORK(&vport->vport_change_handler,
@@ -1792,6 +1802,7 @@ void mlx5_eswitch_vport_event(struct mlx5_eswitch *esw, struct mlx5_eqe *eqe)
 	struct mlx5_eqe_vport_change *vc_eqe = &eqe->data.vport_change;
 	u16 vport_num = be16_to_cpu(vc_eqe->vport_num);
 	struct mlx5_vport *vport;
+	int vport_idx = mlx5_vport_num_to_index(esw, vport_num);
 
 	if (!esw) {
 		pr_warn("MLX5 E-Switch: vport %d got an event while eswitch is not initialized\n",
@@ -1799,7 +1810,7 @@ void mlx5_eswitch_vport_event(struct mlx5_eswitch *esw, struct mlx5_eqe *eqe)
 		return;
 	}
 
-	vport = &esw->vports[vport_num];
+	vport = &esw->vports[vport_idx];
 	if (vport->enabled)
 		queue_work(esw->work_queue, &vport->vport_change_handler);
 }
