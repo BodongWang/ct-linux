@@ -49,8 +49,6 @@
 #define MLX5_MAX_MC_PER_VPORT(dev) \
 	(1 << MLX5_CAP_GEN(dev, log_max_current_mc_list))
 
-#define FDB_UPLINK_VPORT 0xffff
-
 #define MLX5_MIN_BW_SHARE 1
 
 #define MLX5_RATE_TO_BW_SHARE(rate, divider, limit) \
@@ -313,17 +311,26 @@ static inline int mlx5_vport_num_to_index(struct mlx5_eswitch *esw, u16 vport_nu
 	if (vport_num == FDB_UPLINK_VPORT)
 		return mlx5_uplink_rep_idx(esw->dev);
 
+	if (vport_num == ECPF_ESW_PORT_NUMBER)
+		return mlx5_ecpf_rep_idx(esw->dev);
+
 	return vport_num;
 }
 
 static inline int mlx5_rep_idx2vport_num(struct mlx5_eswitch *esw, int i)
 {
+	if (i == mlx5_ecpf_rep_idx(esw->dev))
+		return ECPF_ESW_PORT_NUMBER;
+
 	if (i == mlx5_uplink_rep_idx(esw->dev))
 		return FDB_UPLINK_VPORT;
 
 	return i;
 }
 
+void esw_offloads_disable_reps(struct mlx5_eswitch *esw, int nreps);
+void esw_offloads_unload_reps(struct mlx5_eswitch *esw);
+void esw_offloads_modify_num_reps(struct mlx5_eswitch *esw, int nreps);
 #else  /* CONFIG_MLX5_ESWITCH */
 /* eswitch API stubs */
 static inline int  mlx5_eswitch_init(struct mlx5_core_dev *dev) { return 0; }

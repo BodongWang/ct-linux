@@ -4830,8 +4830,13 @@ static void mlx5e_nic_enable(struct mlx5e_priv *priv)
 
 	mlx5e_enable_async_events(priv);
 
-	if (MLX5_ESWITCH_MANAGER(priv->mdev))
+	if (MLX5_ESWITCH_MANAGER(priv->mdev)) {
 		mlx5e_rep_register_vport_reps(priv);
+		if (mlx5_core_is_ecpf(mdev)) {
+			esw_offloads_enable_reps_type(mdev->priv.eswitch, 0, REP_ETH);
+			esw_offloads_load_reps_type(mdev->priv.eswitch, REP_ETH);
+		}
+	}
 
 	if (netdev->reg_state != NETREG_REGISTERED)
 		return;
@@ -4865,8 +4870,13 @@ static void mlx5e_nic_disable(struct mlx5e_priv *priv)
 
 	queue_work(priv->wq, &priv->set_rx_mode_work);
 
-	if (MLX5_ESWITCH_MANAGER(priv->mdev))
+	if (MLX5_ESWITCH_MANAGER(priv->mdev)) {
+		if (mlx5_core_is_ecpf(mdev)) {
+			esw_offloads_unload_reps_type(mdev->priv.eswitch, REP_ETH);
+			esw_offloads_disable_reps_type(mdev->priv.eswitch, 0, REP_ETH);
+		}
 		mlx5e_rep_unregister_vport_reps(priv);
+	}
 
 	mlx5e_disable_async_events(priv);
 	mlx5_lag_remove(mdev);
@@ -5081,6 +5091,12 @@ static void mlx5e_remove(struct mlx5_core_dev *mdev, void *vpriv)
 {
 	struct mlx5e_priv *priv = vpriv;
 	void *ppriv = priv->ppriv;
+
+	/* representors object take reference on objects created by the NIC
+	 * driver so unload them first
+	 */
+	if (MLX5_ESWITCH_MANAGER(mdev))
+		esw_offloads_unload_reps_type(mdev->priv.eswitch, REP_ETH);
 
 #ifdef CONFIG_MLX5_CORE_EN_DCB
 	mlx5e_dcbnl_delete_app(priv);

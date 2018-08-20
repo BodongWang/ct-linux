@@ -722,7 +722,6 @@ struct mlx5_priv {
 
 	/* generic workqueu - serves EC params events */
 	struct workqueue_struct *wq;
-	struct mlx5_ec_work	 ecw;
 };
 
 enum mlx5_device_state {
@@ -1268,8 +1267,8 @@ static inline bool mlx5_core_is_ecpf(struct mlx5_core_dev *dev)
 	return dev->embedded_cpu;
 }
 
-#define MLX5_TOTAL_REPS(mdev)   (2 + pci_sriov_get_totalvfs((mdev)->pdev))
-#define MLX5_TOTAL_VPORTS(mdev) (2 + pci_sriov_get_totalvfs((mdev)->pdev))
+#define MLX5_TOTAL_REPS(mdev)   (3 + pci_sriov_get_totalvfs((mdev)->pdev))
+#define MLX5_TOTAL_VPORTS(mdev) (3 + pci_sriov_get_totalvfs((mdev)->pdev))
 #define MLX5_VPORT_MANAGER(mdev) \
 	(MLX5_CAP_GEN(mdev, vport_group_manager) && \
 	 (MLX5_CAP_GEN(mdev, port_type) == MLX5_CAP_PORT_TYPE_ETH) && \

@@ -1237,13 +1237,21 @@ static int mlx5_load_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 	err = mlx5_core_set_hca_defaults(dev);
 	if (err) {
 		dev_err(&pdev->dev, "Failed to set hca defaults\n");
-		goto err_fs;
+		goto err_defaults;
 	}
 
 	err = mlx5_sriov_attach(dev);
 	if (err) {
 		dev_err(&pdev->dev, "sriov init failed %d\n", err);
-		goto err_sriov;
+		goto err_defaults;
+	}
+
+	if (mlx5_core_is_ecpf(dev) && MLX5_ESWITCH_MANAGER(dev)) {
+		err = esw_offloads_start(dev->priv.eswitch);
+		if (err) {
+			dev_err(&pdev->dev, "Failed to start offloads %d\n", err);
+			goto err_offloads;
+		}
 	}
 
 	if (mlx5_device_registered(dev)) {
@@ -1263,9 +1271,13 @@ out:
 	return 0;
 
 err_reg_dev:
+	if (mlx5_core_is_ecpf(dev) && MLX5_ESWITCH_MANAGER(dev))
+		esw_offloads_stop(dev->priv.eswitch);
+
+err_offloads:
 	mlx5_sriov_detach(dev);
 
-err_sriov:
+err_defaults:
 	mlx5_cleanup_fs(dev);
 
 err_fs:
@@ -1336,6 +1348,9 @@ static int mlx5_unload_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 	if (cleanup)
 		mlx5_drain_health_recovery(dev);
 
+	mlx5_sriov_detach(dev);
+	if (mlx5_core_is_ecpf(dev) && MLX5_ESWITCH_MANAGER(dev))
+		esw_offloads_stop(dev->priv.eswitch);
 	mutex_lock(&dev->intf_state_mutex);
 	if (!test_bit(MLX5_INTERFACE_STATE_UP, &dev->intf_state)) {
 		dev_warn(&dev->pdev->dev, "%s: interface is down, NOP\n",
@@ -1419,6 +1434,7 @@ static int init_one(struct pci_dev *pdev,
 	pci_set_drvdata(pdev, dev);
 
 	dev->pdev = pdev;
+
 	dev->event = mlx5_core_event;
 	dev->profile = &profile[prof_sel];
 

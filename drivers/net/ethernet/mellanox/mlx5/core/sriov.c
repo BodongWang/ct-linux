@@ -259,7 +259,7 @@ int mlx5_sriov_init(struct mlx5_core_dev *dev)
 	struct pci_dev *pdev = dev->pdev;
 	int total_vfs;
 
-	if (!mlx5_core_is_pf(dev))
+	if (!mlx5_core_is_pf(dev) || mlx5_core_is_ecpf(dev))
 		return 0;
 
 	total_vfs = pci_sriov_get_totalvfs(pdev);

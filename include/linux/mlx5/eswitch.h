@@ -49,6 +49,8 @@ static inline const char *mlx5_rep_type_str(int type)
 	return "Invalid rep type";
 }
 
+#define FDB_UPLINK_VPORT 0xffff
+
 struct mlx5_eswitch_rep;
 struct mlx5_eswitch_rep_if {
 	int		       (*load)(struct mlx5_core_dev *dev,
@@ -84,10 +86,19 @@ u8 mlx5_eswitch_mode(struct mlx5_eswitch *esw);
 struct mlx5_flow_handle *
 mlx5_eswitch_add_send_to_vport_rule(struct mlx5_eswitch *esw,
 				    int vport, u32 sqn);
+void esw_offloads_unload_reps_type(struct mlx5_eswitch *esw, u8 rep_type);
+void esw_offloads_disable_reps_type(struct mlx5_eswitch *esw, int nreps, int rep_type);
+void esw_offloads_enable_reps_type(struct mlx5_eswitch *esw, int nvfs, int rep_type);
+int esw_offloads_load_reps_type(struct mlx5_eswitch *esw, int rep_type);
 
 static inline int mlx5_uplink_rep_idx(struct mlx5_core_dev *dev)
 {
 	return MLX5_TOTAL_REPS(dev) - 1;
+}
+
+static inline int mlx5_ecpf_rep_idx(struct mlx5_core_dev *dev)
+{
+	return MLX5_TOTAL_REPS(dev) - 2;
 }
 
 #endif

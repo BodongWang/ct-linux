@@ -233,4 +233,7 @@ static inline int get_other_vport(struct mlx5_core_dev *mdev, u16 *vport)
 	return !!*vport;
 }
 
+int esw_offloads_start(struct mlx5_eswitch *esw);
+int esw_offloads_stop(struct mlx5_eswitch *esw);
+
 #endif /* __MLX5_CORE_H__ */

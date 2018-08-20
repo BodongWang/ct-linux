@@ -47,9 +47,9 @@ static int _mlx5_query_vport_state(struct mlx5_core_dev *mdev, u8 opmod,
 	MLX5_SET(query_vport_state_in, in, opcode,
 		 MLX5_CMD_OP_QUERY_VPORT_STATE);
 	MLX5_SET(query_vport_state_in, in, op_mod, opmod);
+	MLX5_SET(query_vport_state_in, in, other_vport,
+		 get_other_vport(mdev, &vport));
 	MLX5_SET(query_vport_state_in, in, vport_number, vport);
-	if (vport)
-		MLX5_SET(query_vport_state_in, in, other_vport, 1);
 
 	return mlx5_cmd_exec(mdev, in, sizeof(in), out, outlen);
 }
@@ -83,9 +83,9 @@ int mlx5_modify_vport_admin_state(struct mlx5_core_dev *mdev, u8 opmod,
 	MLX5_SET(modify_vport_state_in, in, opcode,
 		 MLX5_CMD_OP_MODIFY_VPORT_STATE);
 	MLX5_SET(modify_vport_state_in, in, op_mod, opmod);
+	MLX5_SET(modify_vport_state_in, in, other_vport,
+		 get_other_vport(mdev, &vport));
 	MLX5_SET(modify_vport_state_in, in, vport_number, vport);
-	if (vport)
-		MLX5_SET(modify_vport_state_in, in, other_vport, 1);
 	MLX5_SET(modify_vport_state_in, in, admin_state, state);
 
 	return mlx5_cmd_exec(mdev, in, sizeof(in), out, sizeof(out));
@@ -99,9 +99,9 @@ static int mlx5_query_nic_vport_context(struct mlx5_core_dev *mdev, u16 vport,
 
 	MLX5_SET(query_nic_vport_context_in, in, opcode,
 		 MLX5_CMD_OP_QUERY_NIC_VPORT_CONTEXT);
+	MLX5_SET(query_nic_vport_context_in, in, other_vport,
+		 get_other_vport(mdev, &vport));
 	MLX5_SET(query_nic_vport_context_in, in, vport_number, vport);
-	if (vport)
-		MLX5_SET(query_nic_vport_context_in, in, other_vport, 1);
 
 	return mlx5_cmd_exec(mdev, in, sizeof(in), out, outlen);
 }
@@ -156,8 +156,9 @@ int mlx5_modify_nic_vport_min_inline(struct mlx5_core_dev *mdev,
 
 	MLX5_SET(modify_nic_vport_context_in, in,
 		 field_select.min_inline, 1);
+	MLX5_SET(modify_nic_vport_context_in, in, other_vport,
+		 get_other_vport(mdev, &vport));
 	MLX5_SET(modify_nic_vport_context_in, in, vport_number, vport);
-	MLX5_SET(modify_nic_vport_context_in, in, other_vport, 1);
 
 	nic_vport_ctx = MLX5_ADDR_OF(modify_nic_vport_context_in,
 				     in, nic_vport_context);
@@ -206,10 +207,9 @@ int mlx5_modify_nic_vport_mac_address(struct mlx5_core_dev *mdev,
 
 	MLX5_SET(modify_nic_vport_context_in, in,
 		 field_select.permanent_address, 1);
+	MLX5_SET(modify_nic_vport_context_in, in, other_vport,
+		 get_other_vport(mdev, &vport));
 	MLX5_SET(modify_nic_vport_context_in, in, vport_number, vport);
-
-	if (vport)
-		MLX5_SET(modify_nic_vport_context_in, in, other_vport, 1);
 
 	nic_vport_ctx = MLX5_ADDR_OF(modify_nic_vport_context_in,
 				     in, nic_vport_context);

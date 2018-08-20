@@ -1657,7 +1657,7 @@ int mlx5_eswitch_enable_sriov(struct mlx5_eswitch *esw, int nvfs, int mode)
 	} else {
 		mlx5_reload_interface(esw->dev, MLX5_INTERFACE_PROTOCOL_IB);
 
-		err = esw_offloads_init(esw, nvfs + 1);
+		err = esw_offloads_init(esw, nvfs);
 	}
 
 	if (err)
@@ -1674,6 +1674,8 @@ int mlx5_eswitch_enable_sriov(struct mlx5_eswitch *esw, int nvfs, int mode)
 	enabled_events = (mode == SRIOV_LEGACY) ? SRIOV_VPORT_EVENTS : 0;
 	for (i = 0; i <= nvfs; i++)
 		esw_enable_vport(esw, i, enabled_events);
+	if (mlx5_ecpf_vport_exists(esw->dev))
+		esw_enable_vport(esw, ECPF_ESW_PORT_NUMBER, enabled_events);
 
 	esw_info(esw->dev, "SRIOV enabled: active vports(%d)\n",
 		 esw->enabled_vports);
