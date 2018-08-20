@@ -216,4 +216,21 @@ int mlx5_lag_forbid(struct mlx5_core_dev *dev);
 bool mlx5_lag_is_pfN(struct mlx5_core_dev *dev, int n);
 
 void mlx5_reload_interface(struct mlx5_core_dev *mdev, int protocol);
+
+/* use this function to correctly encode the 'vport' and 'other_vport' fields
+ * in commands that utilzie these fields
+ */
+static inline int get_other_vport(struct mlx5_core_dev *mdev, u16 *vport)
+{
+	if (mlx5_core_is_ecpf(mdev)) {
+		if (*vport == ECPF_ESW_PORT_NUMBER) {
+			*vport = 0;
+			return 0;
+		}
+		return 1;
+	}
+
+	return !!*vport;
+}
+
 #endif /* __MLX5_CORE_H__ */

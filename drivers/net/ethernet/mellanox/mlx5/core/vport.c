@@ -303,10 +303,9 @@ int mlx5_query_nic_vport_mac_list(struct mlx5_core_dev *dev,
 	MLX5_SET(query_nic_vport_context_in, in, opcode,
 		 MLX5_CMD_OP_QUERY_NIC_VPORT_CONTEXT);
 	MLX5_SET(query_nic_vport_context_in, in, allowed_list_type, list_type);
+	MLX5_SET(query_nic_vport_context_in, in, other_vport,
+		 get_other_vport(dev, &vport));
 	MLX5_SET(query_nic_vport_context_in, in, vport_number, vport);
-
-	if (vport)
-		MLX5_SET(query_nic_vport_context_in, in, other_vport, 1);
 
 	err = mlx5_cmd_exec(dev, in, sizeof(in), out, out_sz);
 	if (err)
@@ -418,10 +417,9 @@ int mlx5_query_nic_vport_vlans(struct mlx5_core_dev *dev,
 		 MLX5_CMD_OP_QUERY_NIC_VPORT_CONTEXT);
 	MLX5_SET(query_nic_vport_context_in, in, allowed_list_type,
 		 MLX5_NVPRT_LIST_TYPE_VLAN);
+	MLX5_SET(query_nic_vport_context_in, in, other_vport,
+		 get_other_vport(dev, &vport));
 	MLX5_SET(query_nic_vport_context_in, in, vport_number, vport);
-
-	if (vport)
-		MLX5_SET(query_nic_vport_context_in, in, other_vport, 1);
 
 	err = mlx5_cmd_exec(dev, in, sizeof(in), out, out_sz);
 	if (err)
@@ -557,7 +555,8 @@ int mlx5_modify_nic_vport_node_guid(struct mlx5_core_dev *mdev,
 	MLX5_SET(modify_nic_vport_context_in, in,
 		 field_select.node_guid, 1);
 	MLX5_SET(modify_nic_vport_context_in, in, vport_number, vport);
-	MLX5_SET(modify_nic_vport_context_in, in, other_vport, !!vport);
+	MLX5_SET(modify_nic_vport_context_in, in, other_vport,
+		 get_other_vport(mdev, &vport));
 
 	nic_vport_context = MLX5_ADDR_OF(modify_nic_vport_context_in,
 					 in, nic_vport_context);
@@ -1079,9 +1078,9 @@ int mlx5_query_vport_down_stats(struct mlx5_core_dev *mdev, u16 vport,
 	MLX5_SET(query_vnic_env_in, in, opcode,
 		 MLX5_CMD_OP_QUERY_VNIC_ENV);
 	MLX5_SET(query_vnic_env_in, in, op_mod, 0);
+	MLX5_SET(query_vnic_env_in, in, other_vport,
+		 get_other_vport(mdev, &vport));
 	MLX5_SET(query_vnic_env_in, in, vport_number, vport);
-	if (vport)
-		MLX5_SET(query_vnic_env_in, in, other_vport, 1);
 
 	err = mlx5_cmd_exec(mdev, in, sizeof(in), out, sizeof(out));
 	if (err)
