@@ -223,7 +223,7 @@ static void mlx5e_update_carrier(struct mlx5e_priv *priv)
 
 	port_state = mlx5_query_vport_state(mdev,
 					    MLX5_QUERY_VPORT_STATE_IN_OP_MOD_VNIC_VPORT,
-					    0);
+					    mlx5_my_vport_number(mdev));
 
 	if (port_state == VPORT_STATE_UP) {
 		netdev_info(priv->netdev, "Link up\n");
@@ -4550,8 +4550,9 @@ static void mlx5e_build_nic_netdev_priv(struct mlx5_core_dev *mdev,
 static void mlx5e_set_netdev_dev_addr(struct net_device *netdev)
 {
 	struct mlx5e_priv *priv = netdev_priv(netdev);
+	u16 vport = mlx5_my_vport_number(priv->mdev);
 
-	mlx5_query_nic_vport_mac_address(priv->mdev, 0, netdev->dev_addr);
+	mlx5_query_nic_vport_mac_address(priv->mdev, vport, netdev->dev_addr);
 	if (is_zero_ether_addr(netdev->dev_addr) &&
 	    !MLX5_CAP_GEN(priv->mdev, vport_group_manager)) {
 		eth_hw_addr_random(netdev);

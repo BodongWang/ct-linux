@@ -231,12 +231,13 @@ int mlx5_query_nic_vport_mtu(struct mlx5_core_dev *mdev, u16 *mtu)
 	int outlen = MLX5_ST_SZ_BYTES(query_nic_vport_context_out);
 	u32 *out;
 	int err;
+	u16 vport = mlx5_my_vport_number(mdev);
 
 	out = kvzalloc(outlen, GFP_KERNEL);
 	if (!out)
 		return -ENOMEM;
 
-	err = mlx5_query_nic_vport_context(mdev, 0, out, outlen);
+	err = mlx5_query_nic_vport_context(mdev, vport, out, outlen);
 	if (!err)
 		*mtu = MLX5_GET(query_nic_vport_context_out, out,
 				nic_vport_context.mtu);

@@ -123,4 +123,9 @@ int mlx5_nic_vport_query_local_lb(struct mlx5_core_dev *mdev, bool *status);
 int mlx5_nic_vport_affiliate_multiport(struct mlx5_core_dev *master_mdev,
 				       struct mlx5_core_dev *port_mdev);
 int mlx5_nic_vport_unaffiliate_multiport(struct mlx5_core_dev *port_mdev);
+
+static inline int mlx5_my_vport_number(struct mlx5_core_dev *dev)
+{
+	return mlx5_core_is_ecpf(dev) ? ECPF_ESW_PORT_NUMBER : 0;
+}
 #endif /* __MLX5_VPORT_H__ */
