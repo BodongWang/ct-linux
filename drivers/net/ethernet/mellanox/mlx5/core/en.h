@@ -1083,8 +1083,8 @@ int mlx5e_refresh_tirs(struct mlx5e_priv *priv, bool enable_uc_lb);
 /* common netdev helpers */
 int mlx5e_create_indirect_rqt(struct mlx5e_priv *priv);
 
-int mlx5e_create_indirect_tirs(struct mlx5e_priv *priv);
-void mlx5e_destroy_indirect_tirs(struct mlx5e_priv *priv);
+int mlx5e_create_indirect_tirs(struct mlx5e_priv *priv, bool inner_ttc);
+void mlx5e_destroy_indirect_tirs(struct mlx5e_priv *priv, bool inner_ttc);
 
 int mlx5e_create_direct_rqts(struct mlx5e_priv *priv);
 void mlx5e_destroy_direct_rqts(struct mlx5e_priv *priv);
