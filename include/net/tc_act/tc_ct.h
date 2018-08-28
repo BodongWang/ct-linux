@@ -9,6 +9,11 @@ struct tcf_conntrack_info {
 	struct tc_action common;
 	struct net *net;
 	u16 zone;
+	u32 labels[4];
+	u32 labels_mask[4];
+	u32 mark;
+	u32 mark_mask;
+	bool commit;
 };
 
 #define to_conntrack(a) ((struct tcf_conntrack_info *)a)

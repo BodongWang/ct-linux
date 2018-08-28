@@ -26,6 +26,10 @@
 #include <net/netfilter/nf_conntrack.h>
 #include <net/netfilter/nf_conntrack_core.h>
 #include <net/netfilter/nf_conntrack_zones.h>
+#include <net/netfilter/nf_conntrack_helper.h>
+#include <net/netfilter/nf_conntrack_labels.h>
+
+#include <linux/yktrace.h>
 
 static unsigned int conntrack_net_id;
 static struct tc_action_ops act_conntrack_ops;
@@ -33,28 +37,30 @@ static struct tc_action_ops act_conntrack_ops;
 static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
 			struct tcf_result *res)
 {
-	const struct nf_conntrack_tuple_hash *thash;
-	struct nf_conntrack_tuple tuple;
-	enum ip_conntrack_info ctinfo;
 	struct tcf_conntrack_info *ca = to_conntrack(a);
-	struct nf_conntrack_zone zone;
-	struct nf_conn *c;
 	struct net *net = dev_net(skb->dev);
+	enum ip_conntrack_info ctinfo;
+	struct nf_conntrack_zone zone;
+	struct nf_conn *tmpl;
 	struct nf_conn *ct;
-	int proto;
+	int nh_ofs;
 	int err;
 
-	int nh_ofs;
-
 	/* The conntrack module expects to be working at L3. */
-	//nh_ofs = skb_network_offset(skb);
-	//skb_pull_rcsum(skb, nh_ofs);
+	nh_ofs = skb_network_offset(skb);
+	skb_pull_rcsum(skb, nh_ofs);
 
 	spin_lock(&ca->tcf_lock);
 	tcf_lastuse_update(&ca->tcf_tm);
 	bstats_update(&ca->tcf_bstats, skb);
 
-	/* FIXME: support IPv6? what about local generated traffic or input? */
+	trace("ca->commit: %d, ca->zone: %d, ca->mark: %d", ca->commit, ca->zone, ca->mark);
+
+	nf_ct_zone_init(&zone, ca->zone,
+			NF_CT_DEFAULT_ZONE_DIR, 0);
+	tmpl = nf_ct_tmpl_alloc(net, &zone, GFP_KERNEL);
+	nf_ct_set(skb, tmpl, IP_CT_NEW);
+
 	err = nf_conntrack_in(net, PF_INET,
 			      NF_INET_PRE_ROUTING, skb);
 	if (err != NF_ACCEPT) {
@@ -62,11 +68,88 @@ static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
 		goto out;
 	}
 
-	nf_conntrack_confirm(skb);
+	ct = nf_ct_get(skb, &ctinfo);
+	if (!ct) {
+		printk("[yk] tcf_conntrack: nf_ct_get failed\n");
+		goto out;
+	}
+
+	if (ca->commit) {
+		u32 *labels = ca->labels;
+		u32 *labels_m = ca->labels_mask;
+
+#if IS_ENABLED(CONFIG_NF_CONNTRACK_MARK)
+		if (ca->mark_mask) {
+			u32 ct_mark = ca->mark;
+			u32 mask = ca->mark_mask;
+			u32 new_mark;
+
+			new_mark = ct_mark | (ct->mark & ~(mask));
+			if (ct->mark != new_mark) {
+				ct->mark = new_mark;
+				if (nf_ct_is_confirmed(ct))
+					nf_conntrack_event_cache(IPCT_MARK, ct);
+			}
+		}
+#endif
+		if (!nf_ct_is_confirmed(ct)) {
+			struct nf_conn_labels *cl, *master_cl;
+			bool have_mask = !!(memchr_inv(ca->labels_mask, 0, sizeof(ca->labels_mask)));
+
+			/* Inherit master's labels to the related connection? */
+			master_cl = ct->master ? nf_ct_labels_find(ct->master) : NULL;
+
+			if (!master_cl && !have_mask)
+				goto skip; /* Nothing to do. */
+
+			cl = nf_ct_labels_find(ct);
+			if (!cl) {
+				nf_ct_labels_ext_add(ct);
+				cl = nf_ct_labels_find(ct);
+			}
+
+			if (!cl)
+				goto out;
+
+			/* Inherit the master's labels, if any. */
+			if (master_cl)
+				*cl = *master_cl;
+
+			if (have_mask) {
+				u32 *dst = (u32 *)cl->bits;
+				int i;
+
+				for (i = 0; i < 4; i++)
+					dst[i] = (dst[i] & ~labels_m[i]) | (labels[i] & labels_m[i]);
+
+				//todo: can we just replace?
+			}
+
+			/* Labels are included in the IPCTNL_MSG_CT_NEW event only if the
+			 * IPCT_LABEL bit is set in the event cache.
+			 */
+			nf_conntrack_event_cache(IPCT_LABEL, ct);
+		} else if (!memchr_inv(labels_m, 0, sizeof(ca->labels_mask))) {
+			struct nf_conn_labels *cl;
+
+			cl = nf_ct_labels_find(ct);
+			if (!cl) {
+				nf_ct_labels_ext_add(ct);
+				cl = nf_ct_labels_find(ct);
+			}
+
+			if (!cl)
+				goto out;
+
+			nf_connlabels_replace(ct, ca->labels, ca->labels_mask, 4);
+		}
+skip:
+		nf_conntrack_confirm(skb);
+	}
 
 out:
-	//skb_push(skb, nh_ofs);
-	//skb_postpush_rcsum(skb, skb->data, nh_ofs);
+	skb_push(skb, nh_ofs);
+	skb_postpush_rcsum(skb, skb->data, nh_ofs);
 
 	spin_unlock(&ca->tcf_lock);
 	return ca->tcf_action;
@@ -86,8 +169,6 @@ static int tcf_conntrack_init(struct net *net, struct nlattr *nla,
 	struct tcf_conntrack_info *ci;
 	struct tc_conntrack *parm;
 	int ret = 0;
-
-	printk("[yk] tcf_conntrack_init\n");
 
 	if (!nla)
 		return -EINVAL;
@@ -111,11 +192,17 @@ static int tcf_conntrack_init(struct net *net, struct nlattr *nla,
 		ci = to_conntrack(*a);
 		ci->tcf_action = parm->action;
 		ci->net = net;
+		ci->commit = parm->commit;
 		ci->zone = parm->zone;
+		ci->mark = parm->mark;
+		ci->mark_mask = parm->mark_mask;
+		memcpy(ci->labels, parm->labels, sizeof(parm->labels));
+		memcpy(ci->labels_mask, parm->labels_mask, sizeof(parm->labels_mask));
 
 		tcf_idr_insert(tn, *a);
 		ret = ACT_P_CREATED;
 	} else {
+		mtrace("Replacing CT action");
 		ci = to_conntrack(*a);
 		if (bind)
 			return 0;
@@ -142,8 +229,14 @@ static inline int tcf_conntrack_dump(struct sk_buff *skb, struct tc_action *a,
 		.bindcnt = ci->tcf_bindcnt - bind,
 		.action  = ci->tcf_action,
 		.zone   = ci->zone,
+		.commit = ci->commit,
+		.mark = ci->mark,
+		.mark_mask = ci->mark_mask,
 	};
 	struct tcf_t t;
+
+	memcpy(opt.labels, ci->labels, sizeof(opt.labels));
+	memcpy(opt.labels_mask, ci->labels_mask, sizeof(opt.labels_mask));
 
 	if (nla_put(skb, TCA_CONNTRACK_PARMS, sizeof(opt), &opt))
 		goto nla_put_failure;
