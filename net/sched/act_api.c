@@ -1326,12 +1326,14 @@ out_module_put:
 
 struct tcf_action_net {
 	struct rhashtable egdev_ht;
+	struct list_head egdev_list;
 };
 
 static unsigned int tcf_action_net_id;
 
 struct tcf_action_egdev_cb {
 	struct list_head list;
+	struct list_head alllist;
 	tc_setup_cb_t *cb;
 	void *cb_priv;
 };
@@ -1431,6 +1433,7 @@ static int tcf_action_egdev_cb_add(struct tcf_action_egdev *egdev,
 				   tc_setup_cb_t *cb, void *cb_priv)
 {
 	struct tcf_action_egdev_cb *egdev_cb;
+	struct tcf_action_net *tan;
 
 	egdev_cb = tcf_action_egdev_cb_lookup(egdev, cb, cb_priv);
 	if (WARN_ON(egdev_cb))
@@ -1441,6 +1444,10 @@ static int tcf_action_egdev_cb_add(struct tcf_action_egdev *egdev,
 	egdev_cb->cb = cb;
 	egdev_cb->cb_priv = cb_priv;
 	list_add(&egdev_cb->list, &egdev->cb_list);
+
+	tan = net_generic(dev_net(egdev->dev), tcf_action_net_id);
+	list_add(&egdev_cb->alllist, &tan->egdev_list);
+
 	return 0;
 }
 
@@ -1453,6 +1460,7 @@ static void tcf_action_egdev_cb_del(struct tcf_action_egdev *egdev,
 	if (WARN_ON(!egdev_cb))
 		return;
 	list_del(&egdev_cb->list);
+	list_del(&egdev_cb->alllist);
 	kfree(egdev_cb);
 }
 
@@ -1516,10 +1524,26 @@ int tc_setup_cb_egdev_call(const struct net_device *dev,
 }
 EXPORT_SYMBOL_GPL(tc_setup_cb_egdev_call);
 
+int tc_setup_cb_egdev_call_all(enum tc_setup_type type, void *type_data)
+{
+	struct tcf_action_net *tan = net_generic(&init_net, tcf_action_net_id);
+	struct tcf_action_egdev_cb *egdev_cb;
+	int err;
+
+	list_for_each_entry(egdev_cb, &tan->egdev_list, alllist) {
+		err = egdev_cb->cb(type, type_data, egdev_cb->cb_priv);
+		if (!err)
+			return 1;
+	}
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tc_setup_cb_egdev_call_all);
+
 static __net_init int tcf_action_net_init(struct net *net)
 {
 	struct tcf_action_net *tan = net_generic(net, tcf_action_net_id);
 
+	INIT_LIST_HEAD(&tan->egdev_list);
 	return rhashtable_init(&tan->egdev_ht, &tcf_action_egdev_ht_params);
 }
 

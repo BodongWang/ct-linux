@@ -1787,6 +1787,11 @@ int tc_setup_cb_call(struct tcf_block *block, struct tcf_exts *exts,
 	ret = tc_exts_setup_cb_egdev_call(exts, type, type_data, err_stop);
 	if (ret < 0)
 		return ret;
+	if (!ret) {
+		ret = tc_setup_cb_egdev_call_all(type, type_data);
+		if (ret < 0)
+			return ret;
+	}
 	ok_count += ret;
 
 	return ok_count;
