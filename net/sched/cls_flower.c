@@ -29,10 +29,16 @@
 #include <net/dst_metadata.h>
 
 #include <net/netfilter/nf_conntrack_core.h>
+#include <net/netfilter/nf_conntrack_labels.h>
+
+#include <linux/yktrace.h>
 
 struct fl_flow_key {
 	int	indev_ifindex;
 	u8	ct_state;
+	u16	ct_zone;
+	u32	ct_mark;
+	u32	ct_labels[4];
 	struct flow_dissector_key_control control;
 	struct flow_dissector_key_control enc_control;
 	struct flow_dissector_key_basic basic;
@@ -190,6 +196,7 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 	struct fl_flow_key skb_key;
 	struct fl_flow_key skb_mkey;
 	enum ip_conntrack_info ctinfo;
+	struct nf_conn_labels *cl;
 	struct nf_conn *ct;
 
 	list_for_each_entry_rcu(mask, &head->masks, list) {
@@ -200,8 +207,15 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 		 * protocol, so do it rather here.
 		 */
 		ct = nf_ct_get(skb, &ctinfo);
-		if (ct)
+		if (ct) {
 			skb_key.ct_state = fl_ct_get_state(ctinfo);
+			skb_key.ct_zone = ct->zone.id;
+			skb_key.ct_mark = ct->mark;
+
+			cl = nf_ct_labels_find(ct);
+			if (cl)
+				memcpy(skb_key.ct_labels, cl->bits, sizeof(skb_key.ct_labels));
+		}
 		skb_key.basic.n_proto = skb->protocol;
 		skb_flow_dissect_tunnel_info(skb, &mask->dissector, &skb_key);
 		skb_flow_dissect(skb, &mask->dissector, &skb_key, 0);
@@ -314,6 +328,12 @@ static int fl_hw_replace_filter(struct tcf_proto *tp,
 
 	cls_flower.ct_state_key = cls_flower.key->ct_state;
 	cls_flower.ct_state_mask = cls_flower.mask->ct_state;
+	cls_flower.ct_zone_key = cls_flower.key->ct_zone;
+	cls_flower.ct_zone_mask = cls_flower.mask->ct_zone;
+	cls_flower.ct_mark_key = cls_flower.key->ct_mark;
+	cls_flower.ct_mark_mask = cls_flower.mask->ct_mark;
+	memcpy(cls_flower.ct_labels_key, cls_flower.key->ct_labels, sizeof(cls_flower.ct_labels_key));
+	memcpy(cls_flower.ct_labels_mask, cls_flower.mask->ct_labels, sizeof(cls_flower.ct_labels_mask));
 
 	err = tc_setup_cb_call(block, &f->exts, TC_SETUP_CLSFLOWER,
 			       &cls_flower, skip_sw);
@@ -482,6 +502,14 @@ static const struct nla_policy fl_policy[TCA_FLOWER_MAX + 1] = {
 	[TCA_FLOWER_KEY_IP_TTL_MASK]	= { .type = NLA_U8 },
 	[TCA_FLOWER_KEY_CT_STATE]	= { .type = NLA_U8 },
 	[TCA_FLOWER_KEY_CT_STATE_MASK]	= { .type = NLA_U8 },
+	[TCA_FLOWER_KEY_CT_ZONE]	= { .type = NLA_U16 },
+	[TCA_FLOWER_KEY_CT_ZONE_MASK]	= { .type = NLA_U16 },
+	[TCA_FLOWER_KEY_CT_MARK]	= { .type = NLA_U32 },
+	[TCA_FLOWER_KEY_CT_MARK_MASK]	= { .type = NLA_U32 },
+	[TCA_FLOWER_KEY_CT_LABELS]	= { .type = NLA_UNSPEC,
+					    .len = 16 },
+	[TCA_FLOWER_KEY_CT_LABELS_MASK]	= { .type = NLA_UNSPEC,
+					    .len = 16 },
 };
 
 static void fl_set_key_val(struct nlattr **tb,
@@ -618,6 +646,21 @@ static int fl_set_key(struct net *net, struct nlattr **tb,
 	if (tb[TCA_FLOWER_KEY_CT_STATE]) {
 		key->ct_state = nla_get_u8(tb[TCA_FLOWER_KEY_CT_STATE]);
 		mask->ct_state = nla_get_u8(tb[TCA_FLOWER_KEY_CT_STATE_MASK]);
+	}
+
+	if (tb[TCA_FLOWER_KEY_CT_ZONE_MASK]) {
+		key->ct_zone = nla_get_u16(tb[TCA_FLOWER_KEY_CT_ZONE]);
+		mask->ct_zone = nla_get_u16(tb[TCA_FLOWER_KEY_CT_ZONE_MASK]);
+	}
+
+	if (tb[TCA_FLOWER_KEY_CT_MARK_MASK]) {
+		key->ct_mark = nla_get_u32(tb[TCA_FLOWER_KEY_CT_MARK]);
+		mask->ct_mark = nla_get_u32(tb[TCA_FLOWER_KEY_CT_MARK_MASK]);
+	}
+
+	if (tb[TCA_FLOWER_KEY_CT_LABELS_MASK]) {
+		memcpy(key->ct_labels, nla_data(tb[TCA_FLOWER_KEY_CT_LABELS]), nla_len(tb[TCA_FLOWER_KEY_CT_LABELS]));
+		memcpy(mask->ct_labels, nla_data(tb[TCA_FLOWER_KEY_CT_LABELS_MASK]), nla_len(tb[TCA_FLOWER_KEY_CT_LABELS_MASK]));
 	}
 
 	fl_set_key_val(tb, key->eth.dst, TCA_FLOWER_KEY_ETH_DST,
@@ -1339,11 +1382,21 @@ static int fl_dump(struct net *net, struct tcf_proto *tp, void *fh,
 	if (!tc_skip_hw(f->flags))
 		fl_hw_update_stats(tp, f);
 
-	if (mask->ct_state) {
-		fl_dump_key_val(skb, &key->ct_state, TCA_FLOWER_KEY_CT_STATE,
-			    &mask->ct_state, TCA_FLOWER_KEY_CT_STATE_MASK,
-			    sizeof(key->ct_state));
-	}
+	fl_dump_key_val(skb, &key->ct_state, TCA_FLOWER_KEY_CT_STATE,
+			&mask->ct_state, TCA_FLOWER_KEY_CT_STATE_MASK,
+			sizeof(key->ct_state));
+
+	fl_dump_key_val(skb, &key->ct_zone, TCA_FLOWER_KEY_CT_ZONE,
+			&mask->ct_zone, TCA_FLOWER_KEY_CT_ZONE_MASK,
+			sizeof(key->ct_zone));
+
+	fl_dump_key_val(skb, &key->ct_mark, TCA_FLOWER_KEY_CT_MARK,
+			&mask->ct_mark, TCA_FLOWER_KEY_CT_MARK_MASK,
+			sizeof(key->ct_mark));
+
+	fl_dump_key_val(skb, &key->ct_labels, TCA_FLOWER_KEY_CT_LABELS,
+			&mask->ct_labels, TCA_FLOWER_KEY_CT_LABELS_MASK,
+			sizeof(key->ct_labels));
 
 	if (fl_dump_key_val(skb, key->eth.dst, TCA_FLOWER_KEY_ETH_DST,
 			    mask->eth.dst, TCA_FLOWER_KEY_ETH_DST_MASK,
