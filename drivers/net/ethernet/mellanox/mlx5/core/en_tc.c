@@ -2587,6 +2587,10 @@ static int parse_tc_fdb_actions(struct mlx5e_priv *priv, struct tcf_exts *exts,
 			    is_merged_eswitch_dev(priv, out_dev)) {
 				action |= MLX5_FLOW_CONTEXT_ACTION_FWD_DEST |
 					  MLX5_FLOW_CONTEXT_ACTION_COUNT;
+				if (flow->flags & MLX5E_TC_FLOW_EGRESS) {
+					printk(KERN_ERR "%s %d %s @@ egress mirred endpoint, adding decap action\n", __FILE__, __LINE__, __func__);
+					action |= MLX5_FLOW_CONTEXT_ACTION_DECAP;
+				}
 				out_priv = netdev_priv(out_dev);
 				rpriv = out_priv->ppriv;
 				attr->out_rep[attr->out_count] = rpriv->rep;
