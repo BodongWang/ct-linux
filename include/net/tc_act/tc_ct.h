@@ -27,4 +27,9 @@ static inline bool is_tcf_ct(const struct tc_action *a)
 	return false;
 }
 
+static inline struct tcf_conntrack_info *tcf_ct_info(const struct tc_action *a)
+{
+	return to_conntrack(a);
+}
+
 #endif /* __NET_TC_CT_H */

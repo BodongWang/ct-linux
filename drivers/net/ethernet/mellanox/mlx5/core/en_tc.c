@@ -2660,7 +2660,21 @@ static int parse_tc_fdb_actions(struct mlx5e_priv *priv, struct tcf_exts *exts,
 			continue;
 		}
 
-		return -EINVAL;
+		if (is_tcf_ct(a)) {
+			struct tcf_conntrack_info *info = tcf_ct_info(a);
+
+			printk(KERN_ERR "%s %d %s @@ ct action not supported ()details - commit: %d, mark_m: %d, label_m: %d\n", __FILE__, __LINE__, __func__, info->commit, info->mark_mask, info->labels_mask[0]);
+			return -EOPNOTSUPP;
+		}
+
+		if (is_tcf_gact_goto_chain(a)) {
+			int chain = tcf_gact_goto_chain_index(a);
+
+			printk(KERN_ERR "%s %d %s @@ got chain: %d not supported\n", __FILE__, __LINE__, __func__, chain);
+			return -EOPNOTSUPP;
+		}
+
+		return -EOPNOTSUPP;
 	}
 
 	attr->action = action;
