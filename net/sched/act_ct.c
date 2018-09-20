@@ -129,7 +129,7 @@ static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
 			 * IPCT_LABEL bit is set in the event cache.
 			 */
 			nf_conntrack_event_cache(IPCT_LABEL, ct);
-		} else if (!memchr_inv(labels_m, 0, sizeof(ca->labels_mask))) {
+		} else if (!!memchr_inv(labels_m, 0, sizeof(ca->labels_mask))) {
 			struct nf_conn_labels *cl;
 
 			cl = nf_ct_labels_find(ct);
