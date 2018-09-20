@@ -735,12 +735,6 @@ struct tc_cls_flower_offload {
 	/* FIXME: ugly */
 	u8 ct_state_key;
 	u8 ct_state_mask;
-	u32 ct_zone_key;
-	u32 ct_zone_mask;
-	u32 ct_mark_key;
-	u32 ct_mark_mask;
-	u32 ct_labels_key[4];
-	u32 ct_labels_mask[4];
 };
 
 enum tc_matchall_command {

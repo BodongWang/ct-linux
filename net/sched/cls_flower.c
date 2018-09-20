@@ -191,6 +191,7 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 		       struct tcf_result *res)
 {
 	struct cls_fl_head *head = rcu_dereference_bh(tp->root);
+	struct tcf_block *block = tp->chain->block;
 	struct cls_fl_filter *f;
 	struct fl_flow_mask *mask;
 	struct fl_flow_key skb_key;
@@ -198,6 +199,7 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 	enum ip_conntrack_info ctinfo;
 	struct nf_conn_labels *cl;
 	struct nf_conn *ct;
+	int ret = -1;
 
 	list_for_each_entry_rcu(mask, &head->masks, list) {
 		fl_clear_masked_range(&skb_key, mask);
@@ -223,12 +225,17 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 		fl_set_masked_key(&skb_mkey, &skb_key, mask);
 
 		f = fl_lookup(mask, &skb_mkey);
+		/* What's the point of matching against skip_sw rules? */
 		if (f && !tc_skip_sw(f->flags)) {
+			struct tc_microflow_offload mf = { skb, f };
+
 			*res = f->res;
-			return tcf_exts_exec(skb, &f->exts, res);
+			ret = tcf_exts_exec(skb, &f->exts, res);
+
+			tc_setup_cb_call(block, NULL, TC_SETUP_MICROFLOW, &mf, false);
 		}
 	}
-	return -1;
+	return ret;
 }
 
 static int fl_init(struct tcf_proto *tp)
@@ -328,12 +335,6 @@ static int fl_hw_replace_filter(struct tcf_proto *tp,
 
 	cls_flower.ct_state_key = cls_flower.key->ct_state;
 	cls_flower.ct_state_mask = cls_flower.mask->ct_state;
-	cls_flower.ct_zone_key = cls_flower.key->ct_zone;
-	cls_flower.ct_zone_mask = cls_flower.mask->ct_zone;
-	cls_flower.ct_mark_key = cls_flower.key->ct_mark;
-	cls_flower.ct_mark_mask = cls_flower.mask->ct_mark;
-	memcpy(cls_flower.ct_labels_key, cls_flower.key->ct_labels, sizeof(cls_flower.ct_labels_key));
-	memcpy(cls_flower.ct_labels_mask, cls_flower.mask->ct_labels, sizeof(cls_flower.ct_labels_mask));
 
 	err = tc_setup_cb_call(block, &f->exts, TC_SETUP_CLSFLOWER,
 			       &cls_flower, skip_sw);

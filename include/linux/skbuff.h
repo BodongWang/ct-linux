@@ -792,6 +792,7 @@ struct sk_buff {
 	__u8			tc_redirected:1;
 	__u8			tc_from_ingress:1;
 	__u32			tc_recirc_id;
+	void			*tc_priv;
 #endif
 
 #ifdef CONFIG_NET_SCHED
