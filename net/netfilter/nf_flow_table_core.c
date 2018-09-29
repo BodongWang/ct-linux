@@ -290,7 +290,7 @@ EXPORT_SYMBOL_GPL(nf_flow_table_iterate);
 
 static inline bool nf_flow_has_expired(const struct flow_offload *flow)
 {
-	return (__s32)(flow->timeout - (u32)jiffies) <= 0;
+	return ((flow->flags & FLOW_OFFLOAD_HW) == 0 && (__s32)(flow->timeout - (u32)jiffies) <= 0);
 }
 
 static int nf_flow_offload_gc_step(struct nf_flowtable *flow_table)

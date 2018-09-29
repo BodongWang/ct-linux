@@ -493,6 +493,12 @@ config NFT_FLOW_OFFLOAD
 	  This option adds the "flow_offload" expression that you can use to
 	  choose what flows are placed into the hardware.
 
+config NFT_GEN_FLOW_OFFLOAD
+	depends on NF_CONNTRACK && NF_FLOW_TABLE
+	tristate "Netfilter nf_tables smartnic flow offload module"
+	help
+	  This option provides flow_offload add, remove, expiration  API.
+
 config NFT_SET_RBTREE
 	tristate "Netfilter nf_tables rbtree set module"
 	help

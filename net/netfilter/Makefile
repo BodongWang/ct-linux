@@ -115,6 +115,9 @@ nf_flow_table-objs := nf_flow_table_core.o nf_flow_table_ip.o
 
 obj-$(CONFIG_NF_FLOW_TABLE_INET) += nf_flow_table_inet.o
 
+
+obj-$(CONFIG_NFT_GEN_FLOW_OFFLOAD) += nft_gen_flow_offload.o
+
 # generic X tables 
 obj-$(CONFIG_NETFILTER_XTABLES) += x_tables.o xt_tcpudp.o
 
