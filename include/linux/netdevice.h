@@ -794,11 +794,17 @@ enum tc_setup_type {
 	TC_SETUP_QDISC_PRIO,
 	TC_SETUP_QDISC_MQ,
 	TC_SETUP_MICROFLOW,
+	TC_SETUP_CT,
 };
 
 struct tc_microflow_offload {
 	struct sk_buff *skb;
 	unsigned long cookie;
+};
+
+struct tc_ct_offload {
+	struct sk_buff *skb;
+	struct nf_conntrack_tuple *tuple;
 };
 
 /* These structures hold the attributes of bpf state that are being passed

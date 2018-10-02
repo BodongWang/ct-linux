@@ -29,13 +29,15 @@
 #include <net/netfilter/nf_conntrack_helper.h>
 #include <net/netfilter/nf_conntrack_labels.h>
 
+#include <net/pkt_cls.h>
+
 #include <linux/yktrace.h>
 
 static unsigned int conntrack_net_id;
 static struct tc_action_ops act_conntrack_ops;
 
 static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
-			struct tcf_result *res)
+			 struct tcf_result *res)
 {
 	struct tcf_conntrack_info *ca = to_conntrack(a);
 	struct net *net = dev_net(skb->dev);
@@ -72,6 +74,13 @@ static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
 	if (!ct) {
 		printk("[yk] tcf_conntrack: nf_ct_get failed\n");
 		goto out;
+	}
+
+	if (ctinfo == IP_CT_ESTABLISHED ||
+	    ctinfo == IP_CT_ESTABLISHED_REPLY) {
+		struct nf_conntrack_tuple *tuple = nf_ct_tuple(ct, CTINFO2DIR(ctinfo));
+		struct tc_ct_offload cto = { skb, tuple };
+		tc_setup_cb_call(res->block, res->exts, TC_SETUP_CT, &cto, false);
 	}
 
 	if (ca->commit) {

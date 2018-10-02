@@ -152,6 +152,13 @@ struct mlx5_fc {
 	bool aging;
 
 	struct mlx5_fc_cache cache ____cacheline_aligned_in_smp;
+
+	/* TODO: fix 
+	 * change the name "shared"
+	*/
+	bool is_shared;
+	struct mlx5_fc **shared;
+	int nshared;
 };
 
 struct mlx5_ft_underlay_qp {

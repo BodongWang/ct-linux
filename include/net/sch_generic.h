@@ -236,6 +236,9 @@ struct tcf_result {
 		};
 		const struct tcf_proto *goto_tp;
 	};
+	/* TODO: hacky */
+	struct tcf_block *block;
+	void *exts;
 };
 
 struct tcf_proto_ops {

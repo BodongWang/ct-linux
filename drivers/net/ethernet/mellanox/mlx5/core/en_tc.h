@@ -61,6 +61,8 @@ int mlx5e_stats_flower(struct mlx5e_priv *priv,
 
 int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 			      struct tc_microflow_offload *mf);
+int mlx5e_configure_ct(struct mlx5e_priv *priv,
+		       struct tc_ct_offload *cto);
 
 struct mlx5e_encap_entry;
 void mlx5e_tc_encap_flows_add(struct mlx5e_priv *priv,

@@ -199,7 +199,6 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 	enum ip_conntrack_info ctinfo;
 	struct nf_conn_labels *cl;
 	struct nf_conn *ct;
-	int ret = -1;
 
 	list_for_each_entry_rcu(mask, &head->masks, list) {
 		fl_clear_masked_range(&skb_key, mask);
@@ -225,17 +224,20 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 		fl_set_masked_key(&skb_mkey, &skb_key, mask);
 
 		f = fl_lookup(mask, &skb_mkey);
+
 		/* What's the point of matching against skip_sw rules? */
 		if (f && !tc_skip_sw(f->flags)) {
-			struct tc_microflow_offload mf = { skb, f };
+			struct tc_microflow_offload mf = { skb, (unsigned long) f };
+			tc_setup_cb_call(block, &f->exts, TC_SETUP_MICROFLOW, &mf, false);
 
 			*res = f->res;
-			ret = tcf_exts_exec(skb, &f->exts, res);
-
-			tc_setup_cb_call(block, NULL, TC_SETUP_MICROFLOW, &mf, false);
+			/* TODO: hacky */
+			res->block = block;
+			res->exts = &f->exts;
+			return tcf_exts_exec(skb, &f->exts, res);
 		}
 	}
-	return ret;
+	return -1;
 }
 
 static int fl_init(struct tcf_proto *tp)
