@@ -58,7 +58,6 @@ mlx5_eswitch_add_offloaded_rule(struct mlx5_eswitch *esw,
 	if (esw->mode != SRIOV_OFFLOADS)
 		return ERR_PTR(-EOPNOTSUPP);
 
-	/* TODO: ask Paul fwd_fdb vs fast_fdb? */
 	if (attr->mirror_count)
 		ft = esw->fdb_table.offloads.fwd_fdb;
 	else
@@ -86,7 +85,7 @@ mlx5_eswitch_add_offloaded_rule(struct mlx5_eswitch *esw,
 		}
 	}
 	if (flow_act.action & MLX5_FLOW_CONTEXT_ACTION_COUNT) {
-		int err = mlx5_fc_attach(esw->dev, attr->counter);
+		int err = mlx5_fc_attach(esw->dev, attr->counter, true);
 		if (err) {
 			rule = ERR_PTR(err);
 			goto err_out;

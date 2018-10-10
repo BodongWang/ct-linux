@@ -80,6 +80,7 @@ static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
 	    ctinfo == IP_CT_ESTABLISHED_REPLY) {
 		struct nf_conntrack_tuple *tuple = nf_ct_tuple(ct, CTINFO2DIR(ctinfo));
 		struct tc_ct_offload cto = { skb, tuple };
+		/* TODO: do we want tuple as a cookie? */
 		tc_setup_cb_call(res->block, res->exts, TC_SETUP_CT, &cto, false);
 	}
 

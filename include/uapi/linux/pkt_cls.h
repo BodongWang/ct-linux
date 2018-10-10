@@ -486,7 +486,8 @@ enum {
 
 #define TCA_FLOWER_MAX (__TCA_FLOWER_MAX - 1)
 
-/* FIXME: CT_STATE flags; is that the correct place? */
+/* TODO: FIXME: CT_STATE flags; is that the correct place? */
+/* Should we use OVS defines? e.g., OVS_CS_F_NEW */
 #define TCA_FLOWER_KEY_CT_FLAGS_NEW               0x01 /* Beginning of a new connection. */
 #define TCA_FLOWER_KEY_CT_FLAGS_ESTABLISHED       0x02 /* Part of an existing connection. */
 #define TCA_FLOWER_KEY_CT_FLAGS_INVALID           0x10 /* Could not track connection. */

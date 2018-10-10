@@ -31,6 +31,8 @@
 #include <net/netfilter/nf_conntrack_core.h>
 #include <net/netfilter/nf_conntrack_labels.h>
 
+#include <net/tc_act/tc_gact.h>
+
 #include <linux/yktrace.h>
 
 struct fl_flow_key {
@@ -187,6 +189,36 @@ static u8 fl_ct_get_state(enum ip_conntrack_info ctinfo)
 	return ct_state;
 }
 
+/* TODO: can we just check for the last action? */
+/* TODO: do we support: ... mirroring, goto chain, HDR, fwd? */
+static int is_terminating_flow(struct cls_fl_filter *f)
+{
+	struct tc_action **actions = f->exts.actions;
+	int nr_actions = f->exts.nr_actions;
+	int i;
+
+	for (i=0; i<nr_actions; i++) {
+		const struct tc_action *a = actions[i];
+
+		if (is_tcf_gact_goto_chain(a))
+			return 0;
+	}
+
+	return 1;
+}
+
+static void notify_underlying_device(struct sk_buff *skb, const struct tcf_proto *tp,
+				     struct cls_fl_filter *f)
+{
+	struct tcf_block *block = tp->chain->block;
+	struct tc_microflow_offload mf = { skb, (unsigned long) f,
+					   f ? is_terminating_flow(f) : -1 };
+
+	/* TODO: should be replaced by something else TBD */
+	/* VXLAN? egdev replacement */
+	tc_setup_cb_call(block, NULL, TC_SETUP_MICROFLOW, &mf, false);
+}
+
 static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 		       struct tcf_result *res)
 {
@@ -204,9 +236,6 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 		fl_clear_masked_range(&skb_key, mask);
 
 		skb_key.indev_ifindex = skb->skb_iif;
-		/* skb_flow_dissect() does not set n_proto in case an unknown
-		 * protocol, so do it rather here.
-		 */
 		ct = nf_ct_get(skb, &ctinfo);
 		if (ct) {
 			skb_key.ct_state = fl_ct_get_state(ctinfo);
@@ -217,6 +246,9 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 			if (cl)
 				memcpy(skb_key.ct_labels, cl->bits, sizeof(skb_key.ct_labels));
 		}
+		/* skb_flow_dissect() does not set n_proto in case an unknown
+		 * protocol, so do it rather here.
+		 */
 		skb_key.basic.n_proto = skb->protocol;
 		skb_flow_dissect_tunnel_info(skb, &mask->dissector, &skb_key);
 		skb_flow_dissect(skb, &mask->dissector, &skb_key, 0);
@@ -224,11 +256,9 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 		fl_set_masked_key(&skb_mkey, &skb_key, mask);
 
 		f = fl_lookup(mask, &skb_mkey);
-
-		/* What's the point of matching against skip_sw rules? */
 		if (f && !tc_skip_sw(f->flags)) {
-			struct tc_microflow_offload mf = { skb, (unsigned long) f };
-			tc_setup_cb_call(block, &f->exts, TC_SETUP_MICROFLOW, &mf, false);
+			trace("calling notify_underlying_device with f: %px", f);
+			notify_underlying_device(skb, tp, f);
 
 			*res = f->res;
 			/* TODO: hacky */
@@ -237,6 +267,10 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 			return tcf_exts_exec(skb, &f->exts, res);
 		}
 	}
+
+	trace("calling notify_underlying_device with f: NULL");
+	/* TODO: is that the last tp? */
+	notify_underlying_device(skb, tp, NULL);
 	return -1;
 }
 

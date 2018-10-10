@@ -92,6 +92,21 @@ static void mlx5_fc_stats_insert(struct rb_root *root, struct mlx5_fc *counter)
 	rb_insert_color(&counter->node, root);
 }
 
+static void fc_dummies_update(struct mlx5_fc *counter,
+			      u64 dfpackets, u64 dfbytes, u64 jiffies)
+{
+	int i;
+
+	for (i=0; i<counter->nf_dummies; i++) {
+		struct mlx5_fc *s = counter->dummies[i];
+		struct mlx5_fc_cache *c = &s->cache;
+
+		c->packets += dfpackets;
+		c->bytes += dfbytes;
+		c->lastuse = jiffies;
+	}
+}
+
 /* The function returns the last node that was queried so the caller
  * function can continue calling it till all counters are queried.
  */
@@ -152,18 +167,7 @@ static struct rb_node *mlx5_fc_stats_query(struct mlx5_core_dev *dev,
 		c->bytes = bytes;
 		c->lastuse = jiffies;
 
-		if (counter->shared) {
-			int i;
-
-			for (i = 0; i < counter->nshared; i++) {
-				struct mlx5_fc *s = counter->shared[i];
-				struct mlx5_fc_cache *c = &s->cache;
-
-				c->packets += dfpackets;
-				c->bytes += dfbytes;
-				c->lastuse = jiffies;
-			}
-		}
+		fc_dummies_update(counter, dfpackets, dfbytes, jiffies);
 	}
 
 out:
@@ -193,12 +197,8 @@ static void mlx5_fc_stats_work(struct work_struct *work)
 
 	spin_unlock(&fc_stats->addlist_lock);
 
-	list_for_each_entry(counter, &tmplist, list) {
-		if (counter->is_shared && counter->deleted)
-			kfree(counter);
-		else 
-			mlx5_fc_stats_insert(&fc_stats->counters, counter);
-	}
+	list_for_each_entry(counter, &tmplist, list)
+		mlx5_fc_stats_insert(&fc_stats->counters, counter);
 
 	node = rb_first(&fc_stats->counters);
 	while (node) {
@@ -209,7 +209,8 @@ static void mlx5_fc_stats_work(struct work_struct *work)
 		if (counter->deleted) {
 			rb_erase(&counter->node, &fc_stats->counters);
 
-			mlx5_cmd_fc_free(dev, counter->id);
+			if (!counter->dummy)
+				mlx5_cmd_fc_free(dev, counter->id);
 
 			kfree(counter);
 			continue;
@@ -231,19 +232,31 @@ static void mlx5_fc_stats_work(struct work_struct *work)
 	fc_stats->next_query = now + fc_stats->sampling_interval;
 }
 
-struct mlx5_fc *mlx5_fc_create(struct mlx5_core_dev *dev, bool aging)
+struct mlx5_fc *mlx5_fc_alloc(void)
 {
-	struct mlx5_fc_stats *fc_stats = &dev->priv.fc_stats;
 	struct mlx5_fc *counter;
-	int err;
 
 	counter = kzalloc(sizeof(*counter), GFP_KERNEL);
 	if (!counter)
 		return ERR_PTR(-ENOMEM);
 
+	counter->dummy = true;
+	/* TODO: fix */
+	counter->aging = true;
+
+	return counter;
+}
+
+int mlx5_fc_attach(struct mlx5_core_dev *dev, struct mlx5_fc *counter, bool aging)
+{
+	struct mlx5_fc_stats *fc_stats = &dev->priv.fc_stats;
+	int err;
+
 	err = mlx5_cmd_fc_alloc(dev, &counter->id);
 	if (err)
-		goto err_out;
+		return err;
+
+	counter->dummy = false;
 
 	if (aging) {
 		counter->cache.lastuse = jiffies;
@@ -256,6 +269,22 @@ struct mlx5_fc *mlx5_fc_create(struct mlx5_core_dev *dev, bool aging)
 		mod_delayed_work(fc_stats->wq, &fc_stats->work, 0);
 	}
 
+	return 0;
+}
+
+struct mlx5_fc *mlx5_fc_create(struct mlx5_core_dev *dev, bool aging)
+{
+	struct mlx5_fc *counter;
+	int err;
+
+	counter = mlx5_fc_alloc();
+	if (!counter)
+		return ERR_PTR(-ENOMEM);
+
+	err = mlx5_fc_attach(dev, counter, aging);
+	if (err)
+		goto err_out;
+
 	return counter;
 
 err_out:
@@ -265,50 +294,10 @@ err_out:
 }
 EXPORT_SYMBOL(mlx5_fc_create);
 
-struct mlx5_fc *mlx5_fc_alloc(void)
+void mlx5_fc_link_dummies(struct mlx5_fc *counter, struct mlx5_fc **dummies, int nf_dummies)
 {
-	struct mlx5_fc *counter;
-
-	counter = kzalloc(sizeof(*counter), GFP_KERNEL);
-	if (!counter)
-		return ERR_PTR(-ENOMEM);
-
-	/* TODO: fix */
-	counter->is_shared = true;
-	counter->aging = true;
-	counter->cache.lastuse = jiffies;
-
-	return counter;
-}
-
-int mlx5_fc_attach(struct mlx5_core_dev *dev, struct mlx5_fc *counter)
-{
-	struct mlx5_fc_stats *fc_stats = &dev->priv.fc_stats;
-	int err;
-
-	err = mlx5_cmd_fc_alloc(dev, &counter->id);
-	if (err)
-		return err;
-
-	/* TODO: fix */
-	counter->is_shared = false;
-
-	counter->cache.lastuse = jiffies;
-	counter->aging = true;
-
-	spin_lock(&fc_stats->addlist_lock);
-	list_add(&counter->list, &fc_stats->addlist);
-	spin_unlock(&fc_stats->addlist_lock);
-
-	mod_delayed_work(fc_stats->wq, &fc_stats->work, 0);
-
-	return 0;
-}
-
-void mlx5_fc_link_shared_counter(struct mlx5_fc *counter, struct mlx5_fc **shared, int nshared)
-{
-	counter->nshared = nshared;
-	counter->shared = shared;
+	counter->dummies = dummies;
+	counter->nf_dummies = nf_dummies;
 }
 
 void mlx5_fc_destroy(struct mlx5_core_dev *dev, struct mlx5_fc *counter)
@@ -320,10 +309,11 @@ void mlx5_fc_destroy(struct mlx5_core_dev *dev, struct mlx5_fc *counter)
 
 	if (counter->aging) {
 		counter->deleted = true;
-		if (counter->is_shared) {
+
+		if (counter->dummy) {
 			spin_lock(&fc_stats->addlist_lock);
 			list_add(&counter->list, &fc_stats->addlist);
-			spin_unlock(&fc_stats->addlist_lock);	
+			spin_unlock(&fc_stats->addlist_lock);
 		}
 
 		mod_delayed_work(fc_stats->wq, &fc_stats->work, 0);
@@ -367,7 +357,7 @@ void mlx5_cleanup_fc_stats(struct mlx5_core_dev *dev)
 	list_for_each_entry_safe(counter, tmp, &fc_stats->addlist, list) {
 		list_del(&counter->list);
 
-		if (!counter->is_shared)
+		if (!counter->dummy)
 			mlx5_cmd_fc_free(dev, counter->id);
 
 		kfree(counter);

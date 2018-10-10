@@ -858,4 +858,13 @@ struct tc_prio_qopt_offload {
 	};
 };
 
+/* TODO: temp */
+struct tc_skb_cb {
+	struct qdisc_skb_cb cb;
+
+	u32 recirc_id;
+	void *tc_priv;
+};
+
+#define TC_CB(skb) ((struct tc_skb_cb *)(skb)->cb)
 #endif
