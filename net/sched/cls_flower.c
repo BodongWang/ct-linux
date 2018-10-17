@@ -261,9 +261,6 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 			notify_underlying_device(skb, tp, f);
 
 			*res = f->res;
-			/* TODO: hacky */
-			res->block = block;
-			res->exts = &f->exts;
 			return tcf_exts_exec(skb, &f->exts, res);
 		}
 	}
