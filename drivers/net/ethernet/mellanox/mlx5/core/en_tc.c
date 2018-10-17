@@ -868,6 +868,7 @@ mlx5e_tc_add_fdb_flow(struct mlx5e_priv *priv,
 	struct mlx5e_priv *out_priv;
 	int err;
 
+	pr_err("encap\n");
 	if (attr->action & MLX5_FLOW_CONTEXT_ACTION_ENCAP) {
 		out_dev = __dev_get_by_index(dev_net(priv->netdev),
 					     attr->parse_attr->mirred_ifindex);
@@ -883,6 +884,7 @@ mlx5e_tc_add_fdb_flow(struct mlx5e_priv *priv,
 		attr->out_rep[attr->out_count] = rpriv->rep;
 		attr->out_mdev[attr->out_count++] = out_priv->mdev;
 	}
+	pr_err("vlan\n");
 
 	err = mlx5_eswitch_add_vlan_action(esw, attr);
 	if (err) {
@@ -890,6 +892,7 @@ mlx5e_tc_add_fdb_flow(struct mlx5e_priv *priv,
 		goto err_add_vlan;
 	}
 
+	pr_err("pedit\n");
 	if (attr->action & MLX5_FLOW_CONTEXT_ACTION_MOD_HDR) {
 		err = mlx5e_attach_mod_hdr(priv, flow, parse_attr);
 		kfree(parse_attr->mod_hdr_actions);
@@ -903,6 +906,7 @@ mlx5e_tc_add_fdb_flow(struct mlx5e_priv *priv,
 	 * (2) there's an encap action and we're on -EAGAIN (no valid neigh)
 	 */
 	if (rule != ERR_PTR(-EAGAIN)) {
+		pr_err("add offload\n");
 		rule = mlx5_eswitch_add_offloaded_rule(esw, &parse_attr->spec, attr);
 		if (IS_ERR(rule))
 			goto err_add_rule;
@@ -2590,6 +2594,7 @@ vxlan_encap_offload_err:
 	hash_add_rcu(esw->offloads.encap_tbl, &e->encap_hlist, hash_key);
 
 attach_flow:
+	pr_err("attach encap\n");
 	list_add(&flow->encap, &e->flows);
 	*encap_dev = e->out_dev;
 	if (e->flags & MLX5_ENCAP_ENTRY_VALID)
@@ -2597,6 +2602,7 @@ attach_flow:
 	else
 		err = -EAGAIN;
 
+	pr_err("attached encap\n");
 	return err;
 
 out_err:
@@ -2853,6 +2859,7 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 	int attr_size, err = 0;
 	u8 flow_flags = 0;
 
+	pr_err("%s: here\n", __func__);
 	get_flags(flags, &flow_flags);
 
 	flow = rhashtable_lookup_fast(tc_ht, &f->cookie, tc_ht_params);
