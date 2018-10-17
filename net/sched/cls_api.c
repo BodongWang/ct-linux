@@ -882,7 +882,11 @@ int tcf_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 	const struct tcf_proto *first_tp;
 	int limit = 0;
 
+	/* TODO: Temp */
+	TC_CB(skb)->tc_priv = NULL;
+
 reclassify:
+	/* TODO: move to an action */
 	if (tp && tp->chain)
 		TC_CB(skb)->recirc_id = tp->chain->index;
 #endif
