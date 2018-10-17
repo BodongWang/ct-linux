@@ -117,7 +117,7 @@ struct mlx5e_tc_microflow {
 	struct mlx5e_priv *priv;
 	struct mlx5e_tc_flow *flow;
 
-	int nf_flows;
+	int nr_flows;
 	union {
 		unsigned long	     cookies[MICROFLOW_MAX_FLOWS];
 		struct mlx5e_tc_flow *flows[MICROFLOW_MAX_FLOWS];
@@ -952,10 +952,10 @@ static void mlx5e_tc_del_microflow(struct mlx5e_tc_microflow *microflow)
 {
 	int i;
 
-	trace("mlx5e_tc_del_microflow: microflow->nf_flows: %d", microflow->nf_flows);
+	trace("mlx5e_tc_del_microflow: microflow->nr_flows: %d", microflow->nr_flows);
 
 	/* Detach from all parent flows */
-	for (i=0; i<microflow->nf_flows; i++)
+	for (i=0; i<microflow->nr_flows; i++)
 		list_del(&microflow->mnodes[i].node);
 
 	mlx5e_tc_del_fdb_flow(microflow->priv, microflow->flow);
@@ -3243,7 +3243,7 @@ static int microflow_merge(struct mlx5e_tc_microflow *microflow)
 
 	microflow->flow = mflow;
 
-	for (i=0; i<microflow->nf_flows; i++) {
+	for (i=0; i<microflow->nr_flows; i++) {
 		cookie = microflow->path.cookies[i];
 		flow = rhashtable_lookup_fast(tc_ht, &cookie, tc_ht_params);
 		if (!flow)
@@ -3258,7 +3258,7 @@ static int microflow_merge(struct mlx5e_tc_microflow *microflow)
 	/* that is a good place to make sure we can actually merge the given rules */
 	/* print_once for every error, that is the only input to the user */
 
-	for (i=0; i<microflow->nf_flows; i++) {
+	for (i=0; i<microflow->nr_flows; i++) {
 		flow = microflow->path.flows[i];
 
 		/* TODO: move to a function? */
@@ -3283,7 +3283,7 @@ static int microflow_merge(struct mlx5e_tc_microflow *microflow)
 			microflow->dummy_counters[i] = flow->esw_attr->counter;
 	}
 
-	mlx5_fc_link_dummies(mflow->esw_attr->counter, microflow->dummy_counters, microflow->nf_flows);
+	mlx5_fc_link_dummies(mflow->esw_attr->counter, microflow->dummy_counters, microflow->nr_flows);
 
 	/* TOOD: Workaround: crashes otherwise, should fix */
 	mflow->esw_attr->action = mflow->esw_attr->action & ~MLX5_FLOW_CONTEXT_ACTION_CT;
@@ -3294,14 +3294,14 @@ static int microflow_merge(struct mlx5e_tc_microflow *microflow)
 	if (err && err != -EAGAIN)
 		return err;
 	
-	for (i=0; i<microflow->nf_flows; i++) {
+	for (i=0; i<microflow->nr_flows; i++) {
 		flow = microflow->path.flows[i];
 
 		microflow->mnodes[i].microflow = microflow;
 		list_add(&microflow->mnodes[i].node, &flow->microflow_list);
 	}
 
-	trace("microflow_merge: mflow: %px, flows: %d", mflow, microflow->nf_flows);
+	trace("microflow_merge: mflow: %px, flows: %d", mflow, microflow->nr_flows);
 
 	return 0;
 
@@ -3362,7 +3362,7 @@ static struct mlx5e_tc_microflow *microflow_get(struct sk_buff *skb,
 	}
 
 	memset(microflow->path.cookies, 0, sizeof(microflow->path.cookies));
-	microflow->nf_flows = 0;
+	microflow->nr_flows = 0;
 	microflow->priv = priv;
 	set_tc_priv(skb, microflow);
 
@@ -3392,7 +3392,7 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 	if (!microflow)
 		return -1;
 
-	if (microflow->nf_flows == MICROFLOW_MAX_FLOWS)
+	if (microflow->nr_flows == MICROFLOW_MAX_FLOWS)
 		goto err;
 
 	flow = rhashtable_lookup_fast(tc_ht, &cookie, tc_ht_params);
@@ -3411,7 +3411,7 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 
 out:
 	/* TODO: this 5-tuple (dummy) flow won't get free by anyone, only once the driver unloads */
-	microflow->path.cookies[microflow->nf_flows++] = flow->cookie;
+	microflow->path.cookies[microflow->nr_flows++] = flow->cookie;
 	return 0;
 
 err_free:
@@ -3438,7 +3438,7 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	if (!microflow)
 		return -1;
 
-	if (microflow->nf_flows == MICROFLOW_MAX_FLOWS)
+	if (microflow->nr_flows == MICROFLOW_MAX_FLOWS)
 		goto err;
 
 	if (!mf->cookie)
@@ -3448,7 +3448,7 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	if (!flow)
 		goto err;
 
-	microflow->path.cookies[microflow->nf_flows++] = mf->cookie;
+	microflow->path.cookies[microflow->nr_flows++] = mf->cookie;
 
 	/* TODO: extract CT 5-tuple from skb to tc_microflow (done)
 	 * for next rules (ct action might be more than once), compare 5-tuple 
