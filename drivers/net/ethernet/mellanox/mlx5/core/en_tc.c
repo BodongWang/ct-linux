@@ -87,6 +87,7 @@ struct mlx5e_tc_flow {
 	struct mlx5e_priv	*priv;
 	u64			cookie;
 	u8			flags;
+	u8			ct_state;
 	struct mlx5_flow_handle *rule[MLX5E_TC_MAX_SPLITS + 1];
 	struct list_head	encap;   /* flows sharing the same encap ID */
 	struct list_head	mod_hdr; /* flows sharing the same mod hdr ID */
@@ -1649,15 +1650,14 @@ static int parse_cls_flower(struct mlx5e_priv *priv,
 	u8 match_level;
 	int err;
 
-/* TODO: make it nicer */
-#define CT_STATE_MATCH(flags) ((f->ct_state_key & f->ct_state_mask) == (flags))
+	flow->ct_state = (f->ct_state_key & f->ct_state_mask);
 
-	/* TODO: support +new as well */
-	/* We need to store ct_state in flow */
-	/* Allow only -trk and +trk+est only */
-	if (!(CT_STATE_MATCH(0) ||
-	      CT_STATE_MATCH(TCA_FLOWER_KEY_CT_FLAGS_TRACKED |
-			     TCA_FLOWER_KEY_CT_FLAGS_ESTABLISHED))) {
+	/* Allow only -trk, +trk+est and +trk+new only */
+	if (!(flow->ct_state == 0 ||
+	      flow->ct_state == (TCA_FLOWER_KEY_CT_FLAGS_TRACKED |
+				 TCA_FLOWER_KEY_CT_FLAGS_ESTABLISHED) ||
+	      flow->ct_state == (TCA_FLOWER_KEY_CT_FLAGS_TRACKED |
+				 TCA_FLOWER_KEY_CT_FLAGS_NEW))) {
 		netdev_warn(priv->netdev, "Unsupported ct_state used: key/mask: %x/%x\n",
 			    f->ct_state_key, f->ct_state_mask);
 		return -EOPNOTSUPP;
