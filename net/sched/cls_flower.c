@@ -189,30 +189,24 @@ static u8 fl_ct_get_state(enum ip_conntrack_info ctinfo)
 	return ct_state;
 }
 
-/* TODO: can we just check for the last action? */
-/* TODO: do we support: ... mirroring, goto chain, HDR, fwd? */
-static int is_terminating_flow(struct cls_fl_filter *f)
-{
-	struct tc_action **actions = f->exts.actions;
-	int nr_actions = f->exts.nr_actions;
-	int i;
-
-	for (i=0; i<nr_actions; i++) {
-		const struct tc_action *a = actions[i];
-
-		if (is_tcf_gact_goto_chain(a))
-			return 0;
-	}
-
-	return 1;
-}
-
 static void notify_underlying_device(struct sk_buff *skb, const struct tcf_proto *tp,
 				     struct cls_fl_filter *f)
 {
 	struct tcf_block *block = tp->chain->block;
-	struct tc_microflow_offload mf = { skb, (unsigned long) f,
-					   f ? is_terminating_flow(f) : -1 };
+	struct tc_microflow_offload mf = { skb, (unsigned long) f, 0, 0, 0 };
+
+	/* TODO can we do it in the driver? need RCU support for flow */
+	/* TODO: do we support: ... mirroring, goto chain, HDR, fwd? */
+	if (f) {
+		struct tc_action **actions = f->exts.actions;
+		int nr_actions = f->exts.nr_actions;
+
+		atrace(nr_actions > 0);
+
+		mf.is_last = !is_tcf_gact_goto_chain(actions[nr_actions-1]);
+		mf.is_drop = is_tcf_gact_shot(actions[nr_actions-1]);
+		mf.ct_state = (f->mkey.ct_state & f->mask->key.ct_state);
+	}
 
 	/* TODO: should be replaced by something else TBD */
 	/* VXLAN? egdev replacement */
@@ -223,7 +217,6 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 		       struct tcf_result *res)
 {
 	struct cls_fl_head *head = rcu_dereference_bh(tp->root);
-	struct tcf_block *block = tp->chain->block;
 	struct cls_fl_filter *f;
 	struct fl_flow_mask *mask;
 	struct fl_flow_key skb_key;
@@ -266,7 +259,10 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 	}
 
 	trace("calling notify_underlying_device with f: NULL");
-	/* TODO: is that the last tp? */
+	/*
+	 * Assumption: only one tp per protocol.
+	 * All the rules sharing the same protocol should have the same prio as well.
+	 */
 	notify_underlying_device(skb, tp, NULL);
 	return -1;
 }
