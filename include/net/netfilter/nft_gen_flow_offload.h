@@ -24,57 +24,36 @@
 #include <net/netfilter/nf_conntrack_core.h>
 
 
-/* Add one CT conneciton into offloaded flow table, 
-   original CT connection is marked as "OFFLOADED",
-   and CT general aging is frozen.
 
-   CT connection is idenfied by zone and nf_tuple.
-   */
-extern int nft_gen_flow_offload_add(const struct net *net, 
-        const struct nf_conntrack_zone *zone, 
-        const struct nf_conntrack_tuple *tuple);
-
-/* Add one CT conneciton into offloaded flow table, 
-   original CT connection is marked as "OFFLOADED",
-   and CT general aging is frozen.
-
-   Almost same as nft_gen_flow_offload_add, but ct is extracted 
-   from skb
-   */
-extern int nft_gen_flow_offload_add_in_skb(const struct net *net, 
-            const struct nf_conntrack_zone *zone, struct sk_buff *skb);
-
-/* Remove one CT conneciton from offloaded flow table, 
-   original CT connection "OFFLOADED" flag is unset,  
-   and CT general aging is restarted. 
-   
-   This Interface is called by FIN/RST process of HW offload module */
-extern int nft_gen_flow_offload_remove(const struct net *net, 
-                const struct nf_conntrack_zone *zone, 
-                const struct nf_conntrack_tuple *tuple);
-
-/* Remove one CT conneciton from offloaded flow table 
-   when corresponding flows in HW have been aged out. 
-   original CT connection "OFFLOADED" flag is unset,  
-   and CT general aging is restarted.
-
-   Thie Interface is called by flow aging process of HW offload or driver module
-   */
-extern int nft_gen_flow_offload_expiration(const struct net *net, 
-                const struct nf_conntrack_zone *zone, 
-                const struct nf_conntrack_tuple *tuple);
+struct nf_gen_flow_ct_stat {
+    u64 bytes[2];
+    u64 packets[2];
+    u64 last_used; /* most latest in both directions */    
+};
 
 
 
-/* **************** Dependency callback supporting for further extension **************** */
 
 /* gen_offload provides callback to users of one connection
    Few possible application scenario includes,
-   1. Notify all users when one CT connetion is removed by userspace tool.
-   2. Nofity all users when one nf_con state is changed, such as TCP state in FIN process */
+   1. Notify all users or dependencies when one CT connetion is removed by userspace tool .
+   2. Nofity all users or dependencies when one nf_con state is changed, 
+      such as TCP state in TCP.RST process 
+   3. Do proactive aging on connections if get_stats is supported
+   */
+   
 struct flow_offload_dep_ops {
+    /* call user to append new dependency */
     int (*add)(void *, struct list_head *);
+    
+    /* only used by explicitly remove from user */
     void (*remove)(void *, struct list_head *);
+    
+    /* call user to retrieve stats of this connection, statistics data is 
+       written into nf_gen_flow_ct_stat */
+    void (*get_stats)(struct nf_gen_flow_ct_stat *, struct list_head *);
+    
+    /* notify user that this connection is dying */
     int (*destroy)(struct list_head *);
 };
 
@@ -87,17 +66,26 @@ extern void nft_gen_flow_offload_dep_ops_unregister(struct flow_offload_dep_ops 
 /* Add one dependency on one CT conneciton, 
    if this is the first dependency(user) on this connection,
    CT conneciton is marked as "OFFLOADED" and CT general aging is frozen */
-extern int nft_gen_flow_offload_add_dep(const struct net *net, 
+extern int nft_gen_flow_offload_add(const struct net *net, 
             const struct nf_conntrack_zone *zone, 
-            const struct nf_conntrack_tuple *tuple, void *dep);
+            const struct nf_conntrack_tuple *tuple, void *arg);
 
 /* Remove one dependency of one CT conneciton, 
    if this is the last dependency(user) on this connection,
    CT conneciton OFFLOADED is unset, CT general aging is restarted */
-extern int nft_gen_flow_offload_delete_dep(const struct net *net, 
+extern int nft_gen_flow_offload_remove(const struct net *net, 
             const struct nf_conntrack_zone *zone, 
             const struct nf_conntrack_tuple * tuple, void *dep);
 
-/* **********************************************************************************  */
+
+/* Destroy one CT conneciton from offloaded flow table, 
+   original CT connection "OFFLOADED" flag is unset,  
+   and CT general aging is restarted. 
+   
+   This Interface is called by FIN/RST process of HW offload module */
+extern int nft_gen_flow_offload_destroy(const struct net *net, 
+                const struct nf_conntrack_zone *zone, 
+                const struct nf_conntrack_tuple *tuple);
+
 
 #endif

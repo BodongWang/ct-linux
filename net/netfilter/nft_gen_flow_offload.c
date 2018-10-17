@@ -16,19 +16,13 @@
 #include <linux/netfilter.h>
 #include <linux/workqueue.h>
 #include <linux/spinlock.h>
-#include <linux/netfilter/nf_tables.h>
+#include <linux/rhashtable.h>
 #include <net/ip.h> /* for ipv4 options. */
-#include <net/netfilter/nf_tables.h>
-#include <net/netfilter/nf_tables_core.h>
+
 #include <net/netfilter/nf_conntrack_core.h>
 #include <linux/netfilter/nf_conntrack_common.h>
-#include <net/netfilter/nf_flow_table.h>
-#include <net/netfilter/nft_gen_flow_offload.h>
+#include <net/nft_gen_flow_offload.h>
 
-
-
-unsigned int nft_gen_flow_offload_net_id;
-EXPORT_SYMBOL_GPL(nft_gen_flow_offload_net_id);
 
 #ifdef NFT_GEN_FLOW_FUNC_DEBUG
 #define NFT_GEN_FLOW_FUNC_ENTRY()       pr_debug("%s entry", __FUNCTION__)
@@ -38,66 +32,94 @@ EXPORT_SYMBOL_GPL(nft_gen_flow_offload_net_id);
 #define NFT_GEN_FLOW_FUNC_EXIT()
 #endif
 
-struct nft_gen_flow_offload_net {
-    struct nf_flowtable __rcu *flowtable;
+
+unsigned int nft_gen_flow_offload_net_id;
+EXPORT_SYMBOL_GPL(nft_gen_flow_offload_net_id);
+
+
+struct nf_gen_flow_offload_net {
+    struct nf_gen_flow_offload_table __rcu *flowtable;
 };
 
-static inline struct nft_gen_flow_offload_net *nft_gen_flow_offload_pernet(const struct net *net)
+static inline struct nf_gen_flow_offload_net *nft_gen_flow_offload_pernet(const struct net *net)
 {
     return net_generic(net, nft_gen_flow_offload_net_id);
 }
 
+static unsigned int offloaded_ct_timeout = 30*HZ;
+
+module_param(offloaded_ct_timeout, uint, 0644);
+
+#define PORTING_FLOW_TABLE
+
+#ifdef PORTING_FLOW_TABLE
 
 
-struct flow_offload_entry {
-    struct flow_offload     flow;
+
+struct nf_gen_flow_offload_table {
+	struct list_head		list;
+	struct rhashtable		rhashtable;
+	struct delayed_work		gc_work;
+};
+
+enum nf_gen_flow_offload_tuple_dir {
+	FLOW_OFFLOAD_DIR_ORIGINAL = IP_CT_DIR_ORIGINAL,
+	FLOW_OFFLOAD_DIR_REPLY = IP_CT_DIR_REPLY,
+	FLOW_OFFLOAD_DIR_MAX = IP_CT_DIR_MAX
+};
+
+
+struct nf_gen_flow_offload_tuple_rhash {
+	struct rhash_head		node;
+	struct nf_conntrack_tuple	tuple;
+	struct nf_conntrack_zone    zone; // TODO: FIXME 
+};
+
+
+
+#define FLOW_OFFLOAD_DYING	    0x1
+#define FLOW_OFFLOAD_TEARDOWN	0x2
+#define FLOW_OFFLOAD_AGING      0x4
+#define FLOW_OFFLOAD_EXPIRED    0x8
+
+struct nf_gen_flow_offload {
+	struct nf_gen_flow_offload_tuple_rhash		tuplehash[FLOW_OFFLOAD_DIR_MAX];
+	u32	    flags;
+	u32		timeout;
+};
+
+
+struct nf_gen_flow_offload_entry {
+    struct nf_gen_flow_offload     flow;
     struct nf_conn          *ct;
     struct rcu_head         rcu_head;
     struct spinlock         dep_lock;
 	struct list_head        deps;
+	struct nf_gen_flow_ct_stat stats;
 };
+
+static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow);
+static int nft_gen_flow_offload_destroy_dep(struct nf_gen_flow_offload *flow);
 
 
 static void
-nft_gen_flow_offload_fill_dir(struct flow_offload *flow,
+nf_gen_flow_offload_fill_dir(struct nf_gen_flow_offload *flow,
                                         struct nf_conn *ct,
-                                        int ifindex,
-                                        enum flow_offload_tuple_dir dir)
+                                        int zone_id,
+                                        enum nf_gen_flow_offload_tuple_dir dir)
 {
-    struct flow_offload_tuple *ft = &flow->tuplehash[dir].tuple;
-    struct nf_conntrack_tuple *ctt = &ct->tuplehash[dir].tuple;
+    flow->tuplehash[dir].tuple = ct->tuplehash[dir].tuple;
+    flow->tuplehash[dir].tuple.dst.dir = dir;
 
-    ft->dir = dir;
-
-    switch (ctt->src.l3num) {
-    case NFPROTO_IPV4:
-        ft->src_v4 = ctt->src.u3.in;
-        ft->dst_v4 = ctt->dst.u3.in;
-        ft->mtu = 0;
-        break;
-    case NFPROTO_IPV6:
-        ft->src_v6 = ctt->src.u3.in6;
-        ft->dst_v6 = ctt->dst.u3.in6;
-        ft->mtu = 0;
-        break;
-    }
-
-    ft->l3proto = ctt->src.l3num;
-    ft->l4proto = ctt->dst.protonum;
-    ft->src_port = ctt->src.u.tcp.port;
-    ft->dst_port = ctt->dst.u.tcp.port;
-
-    ft->iifidx = ifindex;
-    ft->oifidx = ifindex;
-    ft->dst_cache = NULL;
+    flow->tuplehash[dir].zone.id = zone_id;
 }
 
 
-static struct flow_offload *
-nft_gen_flow_offload_alloc(struct nf_conn *ct, int zone_id, int private_data_len)
+static struct nf_gen_flow_offload *
+nf_gen_flow_offload_alloc(struct nf_conn *ct, int zone_id, int private_data_len)
 {
-    struct flow_offload_entry *entry;
-    struct flow_offload *flow;
+    struct nf_gen_flow_offload_entry *entry;
+    struct nf_gen_flow_offload *flow;
 
     if (unlikely(nf_ct_is_dying(ct) ||
         !atomic_inc_not_zero(&ct->ct_general.use)))
@@ -111,8 +133,8 @@ nft_gen_flow_offload_alloc(struct nf_conn *ct, int zone_id, int private_data_len
 
     entry->ct = ct;
 
-    nft_gen_flow_offload_fill_dir(flow, ct, zone_id, FLOW_OFFLOAD_DIR_ORIGINAL);
-    nft_gen_flow_offload_fill_dir(flow, ct, zone_id, FLOW_OFFLOAD_DIR_REPLY);
+    nf_gen_flow_offload_fill_dir(flow, ct, zone_id, FLOW_OFFLOAD_DIR_ORIGINAL);
+    nf_gen_flow_offload_fill_dir(flow, ct, zone_id, FLOW_OFFLOAD_DIR_REPLY);
 
     INIT_LIST_HEAD(&entry->deps);
     spin_lock_init(&entry->dep_lock);
@@ -125,35 +147,326 @@ err_ct_refcnt:
     return NULL;
 }
 
-static int
-nft_gen_flow_offload_init(const struct net *net)
+static void nf_gen_flow_offload_fixup_tcp(struct ip_ct_tcp *tcp)
 {
-    struct nft_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
-    struct nf_flowtable *flowtable;
-
-    NFT_GEN_FLOW_FUNC_ENTRY();
-
-	flowtable = kzalloc(sizeof(*flowtable), GFP_KERNEL);
-
-	nf_flow_table_init(flowtable);
-
-    rcu_assign_pointer(gnet->flowtable, flowtable);
-
-    NFT_GEN_FLOW_FUNC_EXIT();
-
-    return nf_ct_netns_get((struct net*)net, NFPROTO_INET);
+	tcp->state = TCP_CONNTRACK_ESTABLISHED;
+	tcp->seen[0].td_maxwin = 0;
+	tcp->seen[1].td_maxwin = 0;
 }
+
+static void nf_gen_flow_offload_fixup_ct_state(struct nf_conn *ct)
+{
+	const struct nf_conntrack_l4proto *l4proto;
+	struct net *net = nf_ct_net(ct);
+	unsigned int *timeouts;
+	unsigned int timeout;
+	int l4num;
+
+	l4num = nf_ct_protonum(ct);
+	if (l4num == IPPROTO_TCP)
+		nf_gen_flow_offload_fixup_tcp(&ct->proto.tcp);
+
+	l4proto = __nf_ct_l4proto_find(nf_ct_l3num(ct), l4num);
+	if (!l4proto)
+		return;
+
+	timeouts = l4proto->get_timeouts(net);
+	if (!timeouts)
+		return;
+
+	if (l4num == IPPROTO_TCP)
+		timeout = timeouts[TCP_CONNTRACK_ESTABLISHED];
+	else if (l4num == IPPROTO_UDP)
+		timeout = timeouts[UDP_CT_REPLIED];
+	else
+		return;
+
+	ct->timeout = nfct_time_stamp + timeout;
+
+
+void nf_gen_flow_offload_free(struct nf_gen_flow_offload *flow)
+{
+	struct nf_gen_flow_offload_entry *e;
+
+	e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
+	if (flow->flags & FLOW_OFFLOAD_DYING)
+		nf_ct_delete(e->ct, 0, 0);
+	nf_ct_put(e->ct);
+	kfree_rcu(e, rcu_head);
+}
+
+static u32 _flow_offload_hash(const void *data, u32 len, u32 seed)
+{
+	const struct nf_conntrack_tuple *tuple = data;
+	unsigned int n;
+	
+	n = (sizeof(tuple->src) + sizeof(tuple->dst.u3)) / sizeof(u32);
+
+    /* reuse nf_conntrack hash method */
+	return jhash2((u32 *)tuple, n, seed ^
+		      (((__force __u16)tuple->dst.u.all << 16) |
+		      tuple->dst.protonum));
+}
+
+static u32 _flow_offload_hash_obj(const void *data, u32 len, u32 seed)
+{
+	const struct nf_gen_flow_offload_tuple_rhash *tuplehash = data;
+	unsigned int n;
+	
+	n = (sizeof(tuplehash->tuple.src) + sizeof(tuplehash->tuple.dst.u3)) / sizeof(u32);
+
+	return jhash2((u32 *)&tuplehash->tuple, n, seed ^
+		      (((__force __u16)tuplehash->tuple.dst.u.all << 16) |
+		      tuplehash->tuple.dst.protonum));
+}
+
+static int _flow_offload_hash_cmp(struct rhashtable_compare_arg *arg,
+					const void *ptr)
+{
+	const struct nf_gen_flow_offload_tuple_rhash *x = ptr;
+	struct nf_gen_flow_offload_tuple_rhash *thash;
+
+	thash = container_of(arg->key, struct nf_gen_flow_offload_tuple_rhash, tuple);
+
+	if (memcmp(&x->tuple, &thash->tuple, offsetof(struct nf_conntrack_tuple, dst.dir)) ||
+	    (x->zone.id != thash->zone.id))
+		return 1;
+
+	return 0;
+}
+
+static const struct rhashtable_params nf_gen_flow_offload_rhash_params = {
+	.head_offset		= offsetof(struct nf_gen_flow_offload_tuple_rhash, node),
+	.hashfn			= _flow_offload_hash,
+	.obj_hashfn		= _flow_offload_hash_obj,
+	.obj_cmpfn		= _flow_offload_hash_cmp,
+	.automatic_shrinking	= true,
+};
+
+static int nf_gen_flow_offload_add(struct nf_gen_flow_offload_table *flow_table, 
+                                                struct nf_gen_flow_offload *flow)
+{
+    // TODO: timeout
+	flow->timeout = (u32)jiffies + (30 * HZ);
+
+	rhashtable_insert_fast(&flow_table->rhashtable,
+			       &flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].node,
+			       nf_gen_flow_offload_rhash_params);
+	rhashtable_insert_fast(&flow_table->rhashtable,
+			       &flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].node,
+			       nf_gen_flow_offload_rhash_params);
+	return 0;
+}
+
+static void nf_gen_flow_offload_del(struct nf_gen_flow_offload_table *flow_table,
+			     struct nf_gen_flow_offload *flow)
+{
+	struct nf_gen_flow_offload_entry *e;
+
+	rhashtable_remove_fast(&flow_table->rhashtable,
+			       &flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].node,
+			       nf_gen_flow_offload_rhash_params);
+	rhashtable_remove_fast(&flow_table->rhashtable,
+			       &flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].node,
+			       nf_gen_flow_offload_rhash_params);
+
+	e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
+	clear_bit(IPS_OFFLOAD_BIT, &e->ct->status);
+
+    // TODO: FIXME
+	nft_gen_flow_offload_destroy_dep(flow);
+
+	nf_gen_flow_offload_free(flow);
+}
+
+void nf_gen_flow_offload_teardown(struct nf_gen_flow_offload *flow)
+{
+	struct nf_gen_flow_offload_entry *e;
+
+	flow->flags |= FLOW_OFFLOAD_TEARDOWN;
+
+	e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
+	nf_gen_flow_offload_fixup_ct_state(e->ct);
+}
+
+static struct nf_gen_flow_offload_tuple_rhash *
+nf_gen_flow_offload_lookup(struct nf_gen_flow_offload_table *flow_table,
+                                        const struct nf_conntrack_zone *zone,
+                            		    const struct nf_conntrack_tuple *tuple)
+{
+	struct nf_gen_flow_offload_tuple_rhash key, *res;
+	struct nf_gen_flow_offload *flow;
+	int dir;
+
+    key.tuple = *tuple;
+    key.zone  = *zone;
+    
+	res = rhashtable_lookup_fast(&flow_table->rhashtable, &key.tuple,
+					   nf_gen_flow_offload_rhash_params);
+	if (!res)
+		return NULL;
+
+	dir = res->tuple.dst.dir;
+	flow = container_of(res, struct nf_gen_flow_offload, tuplehash[dir]);
+	if (flow->flags & (FLOW_OFFLOAD_DYING | FLOW_OFFLOAD_TEARDOWN))
+		return NULL;
+
+	return res;
+}
+
+int nf_gen_flow_offload_table_iterate(struct nf_gen_flow_offload_table *flow_table,
+			  void (*iter)(struct nf_gen_flow_offload *flow, void *data),
+			  void *data)
+{
+	struct nf_gen_flow_offload_tuple_rhash *tuplehash;
+	struct rhashtable_iter hti;
+	struct nf_gen_flow_offload *flow;
+	int err;
+
+	err = rhashtable_walk_init(&flow_table->rhashtable, &hti, GFP_KERNEL);
+	if (err)
+		return err;
+
+	rhashtable_walk_start(&hti);
+
+	while ((tuplehash = rhashtable_walk_next(&hti))) {
+		if (IS_ERR(tuplehash)) {
+			err = PTR_ERR(tuplehash);
+			if (err != -EAGAIN)
+				goto out;
+
+			continue;
+		}
+		if (tuplehash->tuple.dst.dir)
+			continue;
+
+		flow = container_of(tuplehash, struct nf_gen_flow_offload, tuplehash[0]);
+
+		iter(flow, data);
+	}
+out:
+	rhashtable_walk_stop(&hti);
+	rhashtable_walk_exit(&hti);
+
+	return err;
+}
+
+// TODO: change expired, u32 timeout vs u64 jiffies?
+static inline bool nf_gen_flow_offload_has_expired(const struct nf_gen_flow_offload *flow)
+{
+	return ((__s32)(flow->timeout - (u32)jiffies) <= 0);
+}
+
+static inline void nf_gen_flow_offload_set_aging(struct nf_gen_flow_offload *flow)
+{
+    flow->flags |= FLOW_OFFLOAD_AGING;
+}
+
+
+static int nf_gen_flow_offload_gc_step(struct nf_gen_flow_offload_table *flow_table)
+{
+	struct nf_gen_flow_offload_tuple_rhash *tuplehash;
+	struct rhashtable_iter hti;
+	struct nf_gen_flow_offload *flow;
+	int err;
+
+	err = rhashtable_walk_init(&flow_table->rhashtable, &hti, GFP_KERNEL);
+	if (err)
+		return 0;
+
+	rhashtable_walk_start(&hti);
+
+	while ((tuplehash = rhashtable_walk_next(&hti))) {
+		if (IS_ERR(tuplehash)) {
+			err = PTR_ERR(tuplehash);
+			if (err != -EAGAIN)
+				goto out;
+
+			continue;
+		}
+		if (tuplehash->tuple.dst.dir)
+			continue;
+
+		flow = container_of(tuplehash, struct nf_gen_flow_offload, tuplehash[0]);
+
+        if (flow->flags & FLOW_OFFLOAD_AGING) {
+            nft_gen_flow_offload_stats(flow);
+        }
+        
+		if (nf_gen_flow_offload_has_expired(flow) || 
+		    (flow->flags & (FLOW_OFFLOAD_DYING |
+				            FLOW_OFFLOAD_TEARDOWN)))
+			nf_gen_flow_offload_del(flow_table, flow);
+	}
+out:
+	rhashtable_walk_stop(&hti);
+	rhashtable_walk_exit(&hti);
+
+	return 1;
+}
+
+static void nf_gen_flow_offload_work_gc(struct work_struct *work)
+{
+	struct nf_gen_flow_offload_table *flow_table;
+
+	flow_table = container_of(work, struct nf_gen_flow_offload_table, gc_work.work);
+	nf_gen_flow_offload_gc_step(flow_table);
+	queue_delayed_work(system_power_efficient_wq, &flow_table->gc_work, HZ);
+}
+
+int nf_gen_flow_offload_table_init(struct nf_gen_flow_offload_table *flowtable)
+{
+	int err;
+
+	INIT_DEFERRABLE_WORK(&flowtable->gc_work, nf_gen_flow_offload_work_gc);
+
+	err = rhashtable_init(&flowtable->rhashtable,
+			      &nf_gen_flow_offload_rhash_params);
+	if (err < 0)
+		return err;
+
+	queue_delayed_work(system_power_efficient_wq,
+			   &flowtable->gc_work, HZ);
+
+	return 0;
+}
+
+static inline void nf_gen_flow_offload_dead(struct nf_gen_flow_offload *flow)
+{
+	flow->flags |= FLOW_OFFLOAD_DYING;
+}
+
+/*  TO be changed */
+static void nf_gen_flow_offload_table_do_cleanup(struct nf_gen_flow_offload *flow, void *data)
+{
+	nf_gen_flow_offload_dead(flow);
+}
+
+
+
+void nf_gen_flow_offload_table_free(struct nf_gen_flow_offload_table *flow_table)
+{
+	cancel_delayed_work_sync(&flow_table->gc_work);
+	nf_gen_flow_offload_table_iterate(flow_table, nf_gen_flow_offload_table_do_cleanup, NULL);
+	WARN_ON(!nf_gen_flow_offload_gc_step(flow_table));
+	rhashtable_destroy(&flow_table->rhashtable);
+}
+
+
+#endif
+
+static struct flow_offload_dep_ops *flow_dep_ops = NULL;
 
 static inline void _flow_offload_debug_op(const struct nf_conntrack_zone *zone,
             const struct nf_conntrack_tuple * tuple, char * op)
 {
     if (tuple->src.l3num == AF_INET) {
-        pr_debug("%s offloaded Tuple(%pI4, %pI4, %d, %d, %d) zone id %d\n",
+        pr_debug("%s Tuple(%pI4, %pI4, %d, %d, %d) zone id %d\n",
                 op, &tuple->src.u3.in, &tuple->dst.u3.in,
                 ntohs(tuple->src.u.all), ntohs(tuple->dst.u.all),
                 tuple->dst.protonum, zone->id);
     } else {
-        pr_debug("%s offloaded Tuple(%pI6, %pI6, %d, %d, %d) zone id %d\n",
+        pr_debug("%s Tuple(%pI6, %pI6, %d, %d, %d) zone id %d\n",
                 op, &tuple->src.u3.in6, &tuple->dst.u3.in6,
                 ntohs(tuple->src.u.all), ntohs(tuple->dst.u.all),
                 tuple->dst.protonum, zone->id);
@@ -161,23 +474,21 @@ static inline void _flow_offload_debug_op(const struct nf_conntrack_zone *zone,
 }
 
 static int _flowtable_add_entry(const struct net *net, int zone_id,
-            struct nf_conn *ct, struct flow_offload ** ret_flow)
+            struct nf_conn *ct, struct nf_gen_flow_offload ** ret_flow)
 {
-    struct nft_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
-    struct nf_flowtable *flowtable;
-    struct flow_offload *flow;
+    struct nf_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
+    struct nf_gen_flow_offload_table *flowtable;
+    struct nf_gen_flow_offload *flow;
     int ret;
 
-    flow = nft_gen_flow_offload_alloc(ct, zone_id, 0);
+    flow = nf_gen_flow_offload_alloc(ct, zone_id, 0);
     if (!flow)
         goto err_flow_alloc;
-
-    flow->flags |= FLOW_OFFLOAD_HW;
 
     rcu_read_lock();
     flowtable = rcu_dereference(gnet->flowtable);
     if (flowtable) {
-        ret = flow_offload_add(flowtable, flow);
+        ret = nf_gen_flow_offload_add(flowtable, flow);
         if (ret < 0)
             goto err_flow_add;
 
@@ -192,7 +503,7 @@ static int _flowtable_add_entry(const struct net *net, int zone_id,
 err_flow_add:
     rcu_read_unlock();
     pr_debug("%s: err_flow_add", __FUNCTION__);
-    flow_offload_free(flow);
+    nf_gen_flow_offload_free(flow);
 err_flow_alloc:
     pr_debug("%s: err_flow_alloc", __FUNCTION__);
     clear_bit(IPS_OFFLOAD_BIT, &ct->status);
@@ -214,47 +525,21 @@ err_ct:
     return -EINVAL;
 }
 
-static inline void _ct_tuple_2_flow_tuple(const struct nf_conntrack_zone *zone,
-                const struct nf_conntrack_tuple * ct_tuple,
-                struct flow_offload_tuple *flow_tuple)
-{
-    if (ct_tuple->src.l3num == AF_INET)
-    {
-        flow_tuple->src_v4 = ct_tuple->src.u3.in;
-        flow_tuple->dst_v4 = ct_tuple->dst.u3.in;
-    }
-    else
-    {
-        flow_tuple->src_v6 = ct_tuple->src.u3.in6;
-        flow_tuple->dst_v6 = ct_tuple->dst.u3.in6;
-    }
-
-    flow_tuple->src_port = ct_tuple->src.u.all;
-    flow_tuple->dst_port = ct_tuple->dst.u.all;
-
-    flow_tuple->l3proto = ct_tuple->src.l3num;
-    flow_tuple->l4proto = ct_tuple->dst.protonum;
-
-    flow_tuple->iifidx = zone->id;
-}
-
-static inline struct flow_offload_tuple_rhash *
+// TODO: remove this wrapper
+static inline struct nf_gen_flow_offload_tuple_rhash *
 _flowtable_lookup(const struct net *net,
                 const struct nf_conntrack_zone *zone,
-                const struct nf_conntrack_tuple * tuple)
+                const struct nf_conntrack_tuple *tuple)
 {
-    struct nft_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
-    struct flow_offload_tuple_rhash *tuplehash;
-    struct nf_flowtable *flowtable;
-    struct flow_offload_tuple flow_tuple = {};
-
-    _ct_tuple_2_flow_tuple(zone, tuple, &flow_tuple);
+    struct nf_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
+    struct nf_gen_flow_offload_table *flowtable;
+    struct nf_gen_flow_offload_tuple_rhash *tuplehash;
 
     rcu_read_lock();
 
     flowtable = rcu_dereference(gnet->flowtable);
     if (flowtable) {
-        tuplehash = flow_offload_lookup(flowtable, &flow_tuple);
+        tuplehash = nf_gen_flow_offload_lookup(flowtable, zone, tuple);
         if (tuplehash == NULL) {
             pr_debug("%s: no hit ", __FUNCTION__);
         }
@@ -266,109 +551,52 @@ _flowtable_lookup(const struct net *net,
 }
 
 
-int nft_gen_flow_offload_add_in_skb(const struct net *net,
-            const struct nf_conntrack_zone *zone, struct sk_buff *skb)
+/* retrieve stats by callbacks */
+static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow)
 {
-    struct nft_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
-    enum ip_conntrack_info ctinfo;
-    struct nf_conn *ct;
-    int ret = -EINVAL;
+    struct nf_gen_flow_offload_entry *e;
+    u64 last_used; 
+    
+	e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
 
-    NFT_GEN_FLOW_FUNC_ENTRY();
+    /* retrieve stats by callbacks */
+    spin_lock(&e->dep_lock); 
+    last_used = e->stats.last_used;
+    flow_dep_ops->get_stats(&e->stats, &e->deps);
+    spin_unlock(&e->dep_lock);
 
-    if (rcu_access_pointer(gnet->flowtable) == NULL)
-        return -ENOENT;
-
-    ct = nf_ct_get(skb, &ctinfo);
-    if (!ct)
-        return ret;
-
-    ret = _check_ct_status(ct);
-    if (ret == 0)
-        ret = _flowtable_add_entry(net, zone->id, ct, NULL);
-
-    NFT_GEN_FLOW_FUNC_EXIT();
-
-    return ret;
+    /* update timeout with new last_used value */
+    // TODO: conn state when offload is set and FIN processed; what is last_used deduced from
+    if (e->stats.last_used > last_used)
+        flow->timeout += offloaded_ct_timeout;
+    
+	return 0;
 }
 
-
-EXPORT_SYMBOL_GPL(nft_gen_flow_offload_add_in_skb);
-
-int nft_gen_flow_offload_add(const struct net *net,
-            const struct nf_conntrack_zone *zone,
-            const struct nf_conntrack_tuple * tuple)
+/* connection is aged out, notify all dependencies  */
+static int nft_gen_flow_offload_destroy_dep(struct nf_gen_flow_offload *flow)
 {
-    struct nft_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
-    const struct nf_conntrack_tuple_hash *thash;
-    struct nf_conn *ct;
-    int ret = -EINVAL;
+    struct nf_gen_flow_offload_entry *e;
+    struct list_head tmp;
 
-    NFT_GEN_FLOW_FUNC_ENTRY();
+	e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
 
-    if (rcu_access_pointer(gnet->flowtable) == NULL)
-        return -ENOENT;
+    if ((flow_dep_ops) && flow_dep_ops->destroy) {
 
-    _flow_offload_debug_op(zone, tuple, "Add");
+        INIT_LIST_HEAD(&tmp);
+        
+        spin_lock(&e->dep_lock);
+        list_replace_init(&e->deps, &tmp);
+        spin_unlock(&e->dep_lock);
 
-    thash = nf_conntrack_find_get((struct net *)net, zone, tuple);
-    if (!thash)
-        return -EINVAL;
-
-    ct = nf_ct_tuplehash_to_ctrack(thash);
-
-    ret = _check_ct_status(ct);
-    if (ret == 0)
-        ret = _flowtable_add_entry(net, zone->id, ct, NULL);
-
-    nf_ct_put(ct);
-
-    NFT_GEN_FLOW_FUNC_EXIT();
-
-    return ret;
-}
-
-
-EXPORT_SYMBOL_GPL(nft_gen_flow_offload_add);
-
-
-
-int nft_gen_flow_offload_expiration(const struct net *net,
-                const struct nf_conntrack_zone *zone,
-                const struct nf_conntrack_tuple *tuple)
-{
-    struct nft_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
-    struct flow_offload_tuple_rhash *tuplehash;
-    struct flow_offload *flow;
-    enum flow_offload_tuple_dir dir;
-
-    NFT_GEN_FLOW_FUNC_ENTRY();
-
-    if (rcu_access_pointer(gnet->flowtable) == NULL)
-        return 0;
-
-    _flow_offload_debug_op(zone, tuple, "Expire");
-
-    tuplehash = _flowtable_lookup(net, zone, tuple);
-    if (tuplehash) {
-        dir = tuplehash->tuple.dir;
-        flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
-
-        /* Can't use flow_teardown, flow_teardown should be 
-           called before FIN is put into NF, it tries to restore 
-           connection timeout value and seq */
-    	flow->flags |= FLOW_OFFLOAD_TEARDOWN;
+        flow_dep_ops->destroy(&tmp);
     }
 
-    NFT_GEN_FLOW_FUNC_EXIT();
     return 0;
 }
 
-EXPORT_SYMBOL_GPL(nft_gen_flow_offload_expiration);
 
-
-
-static struct flow_offload_dep_ops *flow_dep_ops = NULL;
+/* EXPORT FUNCTIONS */
 
 void nft_gen_flow_offload_dep_ops_register(struct flow_offload_dep_ops * ops)
 {
@@ -386,16 +614,17 @@ void nft_gen_flow_offload_dep_ops_unregister(struct flow_offload_dep_ops * ops)
 EXPORT_SYMBOL_GPL(nft_gen_flow_offload_dep_ops_unregister);
 
 
-int nft_gen_flow_offload_add_dep(const struct net *net,
+
+int nft_gen_flow_offload_add(const struct net *net,
             const struct nf_conntrack_zone *zone,
             const struct nf_conntrack_tuple *tuple, void *dep)
 {
-    struct nft_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
+    struct nf_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
     const struct nf_conntrack_tuple_hash *thash;
-    struct flow_offload_tuple_rhash *fhash;
-    enum flow_offload_tuple_dir dir;
-    struct flow_offload *flow;
-    struct flow_offload_entry *entry;
+    struct nf_gen_flow_offload_tuple_rhash *fhash;
+    enum nf_gen_flow_offload_tuple_dir dir;
+    struct nf_gen_flow_offload *flow;
+    struct nf_gen_flow_offload_entry *entry;
     struct nf_conn *ct;
     int ret;
 
@@ -412,8 +641,8 @@ int nft_gen_flow_offload_add_dep(const struct net *net,
     /* lookup */
     fhash = _flowtable_lookup(net, zone, tuple);
     if (fhash) {
-        dir = fhash->tuple.dir;
-        entry = container_of(fhash, struct flow_offload_entry, flow.tuplehash[dir]);
+        dir = fhash->tuple.dst.dir;
+        entry = container_of(fhash, struct nf_gen_flow_offload_entry, flow.tuplehash[dir]);
     } else {
         thash = nf_conntrack_find_get((struct net *)net, zone, tuple);
         if (!thash)
@@ -429,32 +658,44 @@ int nft_gen_flow_offload_add_dep(const struct net *net,
         nf_ct_put(ct);
         if (ret < 0) return ret;
 
-        entry = container_of(flow, struct flow_offload_entry, flow);
+        entry = container_of(flow, struct nf_gen_flow_offload_entry, flow);
     }
 
-    spin_lock(&entry->dep_lock);
+    if (flow_dep_ops->add) {
+        spin_lock(&entry->dep_lock);
 
-    ret = flow_dep_ops->add(dep, &entry->deps);
-    if (ret && (list_empty_careful(&entry->deps)))
-        entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;
+        ret = flow_dep_ops->add(dep, &entry->deps);
+        if (ret && (list_empty_careful(&entry->deps))) {
+            entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;
+            spin_unlock(&entry->dep_lock);
+            return ret;
+        }                
+        
+        spin_unlock(&entry->dep_lock);
+    }
 
-    spin_unlock(&entry->dep_lock);
-
+    if (flow_dep_ops->get_stats) {
+        /* update timeout for new dep*/
+        flow->timeout = (u32)jiffies + offloaded_ct_timeout;
+        
+        nf_gen_flow_offload_set_aging(flow);        
+    }
+    
     NFT_GEN_FLOW_FUNC_EXIT();
 
     return ret;
 }
 
-EXPORT_SYMBOL_GPL(nft_gen_flow_offload_add_dep);
+EXPORT_SYMBOL_GPL(nft_gen_flow_offload_add);
 
-int nft_gen_flow_offload_delete_dep(const struct net *net,
+int nft_gen_flow_offload_remove(const struct net *net,
             const struct nf_conntrack_zone *zone,
             const struct nf_conntrack_tuple * tuple, void *dep)
 {
-    struct nft_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
-    struct flow_offload_tuple_rhash *fhash;
-    enum flow_offload_tuple_dir dir;
-    struct flow_offload_entry *entry;
+    struct nf_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
+    struct nf_gen_flow_offload_tuple_rhash *fhash;
+    enum nf_gen_flow_offload_tuple_dir dir;
+    struct nf_gen_flow_offload_entry *entry;
     int ret;
 
     NFT_GEN_FLOW_FUNC_ENTRY();
@@ -470,17 +711,18 @@ int nft_gen_flow_offload_delete_dep(const struct net *net,
     /* lookup */
     fhash = _flowtable_lookup(net, zone, tuple);
     if (fhash) {
-        dir = fhash->tuple.dir;
-        entry = container_of(fhash, struct flow_offload_entry, flow.tuplehash[dir]);
+        dir = fhash->tuple.dst.dir;
+        entry = container_of(fhash, struct nf_gen_flow_offload_entry, flow.tuplehash[dir]);
 
-        spin_lock(&entry->dep_lock);
+        if (flow_dep_ops->remove) {
+            spin_lock(&entry->dep_lock);
 
-        flow_dep_ops->remove(dep, &entry->deps);
-        if (list_empty_careful(&entry->deps)) {
-            entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;
+            flow_dep_ops->remove(dep, &entry->deps);
+            if (list_empty_careful(&entry->deps)) {
+                entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;
+            }
+            spin_unlock(&entry->dep_lock);
         }
-        spin_unlock(&entry->dep_lock);
-
     } else {
         ret = -ENOENT;
     }
@@ -491,18 +733,17 @@ int nft_gen_flow_offload_delete_dep(const struct net *net,
     return ret;
 }
 
-EXPORT_SYMBOL_GPL(nft_gen_flow_offload_delete_dep);
+EXPORT_SYMBOL_GPL(nft_gen_flow_offload_remove);
 
 
-int nft_gen_flow_offload_remove(const struct net *net,
+int nft_gen_flow_offload_destroy(const struct net *net,
             const struct nf_conntrack_zone *zone,
             const struct nf_conntrack_tuple * tuple)
 {
-    struct nft_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
-    struct flow_offload_tuple_rhash *tuplehash;
-    struct flow_offload_entry *entry;
-    enum flow_offload_tuple_dir dir;
-    struct list_head tmp;
+    struct nf_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
+    struct nf_gen_flow_offload_tuple_rhash *thash;
+    struct nf_gen_flow_offload *flow;
+    enum nf_gen_flow_offload_tuple_dir dir;
 
     NFT_GEN_FLOW_FUNC_ENTRY();
 
@@ -511,23 +752,15 @@ int nft_gen_flow_offload_remove(const struct net *net,
 
     _flow_offload_debug_op(zone, tuple, "Remove");
 
-    tuplehash = _flowtable_lookup(net, zone, tuple);
-    if (tuplehash != NULL) {
-        dir = tuplehash->tuple.dir;
+    thash = _flowtable_lookup(net, zone, tuple);
+    if (thash != NULL) {
+        dir = thash->tuple.dst.dir;
         
-        entry = container_of(tuplehash, struct flow_offload_entry, flow.tuplehash[dir]);
+        flow = container_of(thash, struct nf_gen_flow_offload, tuplehash[dir]);
                 
-        entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;
+        nft_gen_flow_offload_destroy_dep(flow);
 
-        if (flow_dep_ops) {
-            
-            spin_lock(&entry->dep_lock);
-            list_replace(&entry->deps, &tmp);
-            INIT_LIST_HEAD(&entry->deps);
-            spin_unlock(&entry->dep_lock);
-
-            flow_dep_ops->destroy(&tmp);
-        }
+        flow->flags |= FLOW_OFFLOAD_TEARDOWN;
     }
 
     NFT_GEN_FLOW_FUNC_EXIT();
@@ -535,32 +768,32 @@ int nft_gen_flow_offload_remove(const struct net *net,
     return 0;
 }
 
-EXPORT_SYMBOL_GPL(nft_gen_flow_offload_remove);
+EXPORT_SYMBOL_GPL(nft_gen_flow_offload_destroy);
 
 
-static void nft_gen_flow_table_do_cleanup(struct flow_offload *flow, void *data)
+static int
+nft_gen_flow_offload_init(const struct net *net)
 {
-    int *zone_id = data;
+    struct nf_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
+    struct nf_gen_flow_offload_table *flowtable;
+
     NFT_GEN_FLOW_FUNC_ENTRY();
 
-    if (!zone_id) {
-        flow->flags &= ~FLOW_OFFLOAD_HW;
-        flow->flags |= FLOW_OFFLOAD_TEARDOWN;
-        return;
-    }
+	flowtable = kzalloc(sizeof(*flowtable), GFP_KERNEL);
 
-    if (flow->tuplehash[0].tuple.iifidx == *zone_id ||
-        flow->tuplehash[1].tuple.iifidx == *zone_id) {
-        flow->flags &= ~FLOW_OFFLOAD_HW;
-        flow_offload_dead(flow);
-    }
+	nf_gen_flow_offload_table_init(flowtable);
+
+    rcu_assign_pointer(gnet->flowtable, flowtable);
+
+    NFT_GEN_FLOW_FUNC_EXIT();
+
+    return nf_ct_netns_get((struct net*)net, NFPROTO_INET);
 }
-
 
 
 static int __net_init nft_gen_flow_net_init(struct net *net)
 {
-    struct nft_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
+    struct nf_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
 
     pr_debug("nft_gen_flow_net_init: net %p", net);
 
@@ -587,7 +820,7 @@ static int __net_init nft_gen_flow_net_init(struct net *net)
 
         nft_gen_flow_offload_add(net, &test_zone, &test_tuple);
 
-        nft_gen_flow_offload_remove(net, &test_zone, &test_tuple);
+        nft_gen_flow_offload_destroy(net, &test_zone, &test_tuple);
     }
 #endif
     return 0;
@@ -595,17 +828,15 @@ static int __net_init nft_gen_flow_net_init(struct net *net)
 
 static void __net_exit nft_gen_flow_net_exit(struct net *net)
 {
-    struct nft_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
-    struct nf_flowtable * flowtable = rcu_access_pointer(gnet->flowtable);
+    struct nf_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
+    struct nf_gen_flow_offload_table * flowtable = rcu_access_pointer(gnet->flowtable);
 
     if (flowtable != NULL) {
         rcu_assign_pointer(gnet->flowtable, NULL);
 
         synchronize_rcu();
 
-        nf_flow_table_iterate(flowtable, nft_gen_flow_table_do_cleanup, NULL);
-
-        nf_flow_table_free(flowtable);
+        nf_gen_flow_offload_table_free(flowtable);
 
         kfree(flowtable);
 
@@ -618,8 +849,9 @@ static struct pernet_operations nft_gen_flow_offload_net_ops = {
     .init           = nft_gen_flow_net_init,
     .exit           = nft_gen_flow_net_exit, // TODO: change to batch
     .id             = &nft_gen_flow_offload_net_id,
-    .size           = sizeof(struct nft_gen_flow_offload_net),
+    .size           = sizeof(struct nf_gen_flow_offload_net),
 };
+
 
 
 static int __init nft_gen_flow_offload_module_init(void)
