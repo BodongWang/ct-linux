@@ -1777,7 +1777,7 @@ static int offload_pedit_fields(struct pedit_headers *masks,
 	set_vals = &vals[TCA_PEDIT_KEY_EX_CMD_SET];
 	add_vals = &vals[TCA_PEDIT_KEY_EX_CMD_ADD];
 
-	action_size = MLX5_UN_SZ_BYTES(set_action_in_add_action_in_auto);
+	action_size = MLX5_MH_ACT_SZ;
 	action = parse_attr->mod_hdr_actions;
 	max_actions = parse_attr->num_mod_hdr_actions;
 	nactions = 0;
@@ -1870,7 +1870,7 @@ static int alloc_mod_hdr_actions(struct mlx5e_priv *priv,
 {
 	int action_size, max_actions;
 
-	action_size = MLX5_UN_SZ_BYTES(set_action_in_add_action_in_auto);
+	action_size = MLX5_MH_ACT_SZ;
 
 	if (namespace == MLX5_FLOW_NAMESPACE_FDB) /* FDB offloading */
 		max_actions = MLX5_CAP_ESW_FLOWTABLE_FDB(priv->mdev, max_modify_header_actions);
@@ -3142,7 +3142,7 @@ static int microflow_merge_hdr(struct mlx5e_priv *priv,
 
 	trace("merge MOD_HDR action");
 
- 	action_size = MLX5_UN_SZ_BYTES(set_action_in_add_action_in_auto);
+	action_size = MLX5_MH_ACT_SZ;
 
 	dst_parse_attr = mflow->esw_attr->parse_attr;
 	if (!dst_parse_attr->mod_hdr_actions) {
