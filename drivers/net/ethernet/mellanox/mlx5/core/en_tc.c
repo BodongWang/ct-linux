@@ -2836,7 +2836,7 @@ static int configure_fdb(struct mlx5e_tc_flow *flow)
 
 	parse_attr = flow->esw_attr->parse_attr;
 	flow->rule[0] = mlx5e_tc_add_fdb_flow(priv, parse_attr, flow);
-	trace("mlx5e_tc_add_fdb_flow: IS_ERR(flow->rule[0]): %d/%d", IS_ERR(flow->rule[0]), PTR_ERR(flow->rule[0]));
+	trace("mlx5e_tc_add_fdb_flow: IS_ERR(flow->rule[0]): %d/%ld", IS_ERR(flow->rule[0]), PTR_ERR(flow->rule[0]));
 	if (IS_ERR(flow->rule[0])) {
 		err = PTR_ERR(flow->rule[0]);
 		if (err != -EAGAIN)
