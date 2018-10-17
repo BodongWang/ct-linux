@@ -111,6 +111,7 @@ struct mlx5e_microflow_node {
 #define MICROFLOW_MAX_FLOWS 8
 
 struct mlx5e_tc_microflow {
+	struct rhash_head node;
 	struct work_struct work;
 	struct mlx5e_priv *priv;
 	struct mlx5e_tc_flow *flow;
@@ -137,6 +138,17 @@ struct mlx5e_tc_flow_parse_attr {
 enum {
 	MLX5_HEADER_TYPE_VXLAN = 0x0,
 	MLX5_HEADER_TYPE_NVGRE = 0x1,
+};
+
+/* TODO: should be part of a structure, rather than global */
+struct rhashtable mf_ht;
+
+static const struct rhashtable_params mf_ht_params = {
+	.head_offset = offsetof(struct mlx5e_tc_microflow, node),
+	.key_offset = offsetof(struct mlx5e_tc_microflow, path.cookies),
+	.key_len = sizeof(((struct mlx5e_tc_microflow *)0)->path.cookies),
+	/* TODO: we can suffice with static table, what should be the default size? */
+	.automatic_shrinking = true,
 };
 
 #define MLX5E_TC_TABLE_NUM_GROUPS 4
@@ -3310,10 +3322,20 @@ void __microflow_merge(struct work_struct *work)
 	rtnl_lock();
 	microflow_merge(microflow);
 	rtnl_unlock();
+
+	rhashtable_remove_fast(&mf_ht, &microflow->node, mf_ht_params);
 }
 
 static int microflow_merge_work(struct mlx5e_tc_microflow *microflow)
 {
+	int err;
+
+	err = rhashtable_lookup_insert_fast(&mf_ht, &microflow->node, mf_ht_params);
+	if (err) {
+		ntrace("rhashtable_lookup_insert_fast: error: %d (prevent duplicated microflows)", err);
+		return err;
+	}
+
 	INIT_WORK(&microflow->work, __microflow_merge);
 	queue_work(microflow->priv->wq, &microflow->work);
 	return 0;
@@ -3339,6 +3361,7 @@ static struct mlx5e_tc_microflow *microflow_get(struct sk_buff *skb,
 		return NULL;
 	}
 
+	memset(microflow->path.cookies, 0, sizeof(microflow->path.cookies));
 	microflow->nf_flows = 0;
 	microflow->priv = priv;
 	set_tc_priv(skb, microflow);
@@ -3406,6 +3429,7 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	struct mlx5e_tc_flow *flow;
 	struct mlx5e_tc_microflow *microflow;
 	bool is_terminating = mf->last ? true : false;
+	int err;
 
 	trace("mlx5e_configure_microflow: mf->last: %d, get_tc_priv(skb): %px", mf->last, get_tc_priv(skb));
 
@@ -3431,15 +3455,20 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	 * to the stored one, can we "safely" merge if there is a mismatch?
 	 */
 
-	/* TODO: add cache for offloaded microflows?
-		once the microflow removed, should remove from the list as well
-	*/
-
 	trace("is_flow_terminating: %d", is_terminating);
-	if (is_terminating) {
-		microflow_merge_work(microflow);
-		set_tc_priv(skb, 0);
+	if (!is_terminating)
+		return 0;
+
+	err = rhashtable_lookup_insert_fast(&mf_ht, &microflow->node, mf_ht_params);
+	if (err) {
+		ntrace("rhashtable_lookup_insert_fast: error: %d (prevent duplicated microflows)", err);
+		goto err;
 	}
+
+	err = microflow_merge_work(microflow);
+	if (err)
+		goto err;
+	set_tc_priv(skb, 0);
 
 	return 0;
 
@@ -3547,14 +3576,25 @@ int mlx5e_tc_esw_init(struct rhashtable *tc_ht)
 
 	err = rhashtable_init(tc_ht, &tc_ht_params);
 	if (err)
-		rhashtable_free_and_destroy(tc_ht, NULL, NULL);
+		goto err_tc_ht;
 
+	err = rhashtable_init(&mf_ht, &mf_ht_params);
+	if (err)
+		goto err_mf_ht;
+
+	return 0;
+
+err_mf_ht:
+	rhashtable_free_and_destroy(tc_ht, NULL, NULL);
+err_tc_ht:
+	kmem_cache_destroy(microflow_cache);
 	return err;
 }
 
 void mlx5e_tc_esw_cleanup(struct rhashtable *tc_ht)
 {
 	rhashtable_free_and_destroy(tc_ht, _mlx5e_tc_del_flow, NULL);
+	rhashtable_free_and_destroy(&mf_ht, NULL, NULL);
 
 	kmem_cache_destroy(microflow_cache);
 }
