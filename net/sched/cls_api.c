@@ -1778,6 +1778,10 @@ int tc_setup_cb_call(struct tcf_block *block, struct tcf_exts *exts,
 {
 	int ret;
 
+	/* TODO: temporary workaround */
+	if (!block)
+		goto egdev_all;
+
 	ret = tcf_block_cb_call(block, type, type_data, err_stop);
 	if (ret)
 		return ret;
