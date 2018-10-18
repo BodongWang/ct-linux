@@ -800,9 +800,7 @@ enum tc_setup_type {
 struct tc_microflow_offload {
 	struct sk_buff *skb;
 	unsigned long cookie;
-	int is_last;
-	int is_drop;
-	u8 ct_state;
+	int last;
 };
 
 struct tc_ct_offload {

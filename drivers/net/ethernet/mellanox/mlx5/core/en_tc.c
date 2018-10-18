@@ -125,9 +125,6 @@ struct mlx5e_tc_microflow {
 	struct mlx5e_microflow_node mnodes[MICROFLOW_MAX_FLOWS];
 
 	struct mlx5_fc *dummy_counters[MICROFLOW_MAX_FLOWS];
-
-	/* TODO: temp */
-	u8 ct_state;
 };
 
 struct mlx5e_tc_flow_parse_attr {
@@ -3237,10 +3234,6 @@ static int microflow_merge(struct mlx5e_tc_microflow *microflow)
 
 	microflow->flow = mflow;
 
-	/* check that all are exact match; is this necessary? */
-	/* that is a good place to make sure we can actually merge the given rules */
-	/* print_once for every error, that is the only input to the user */
-
 	for (i=0; i<microflow->nr_flows; i++) {
 		cookie = microflow->path.cookies[i];
 		flow = rhashtable_lookup_fast(tc_ht, &cookie, tc_ht_params);
@@ -3248,7 +3241,18 @@ static int microflow_merge(struct mlx5e_tc_microflow *microflow)
 			goto err;
 
 		microflow->path.flows[i] = flow;
+	}
 
+	/* TODO: we should allow +new with drop only */
+
+	/* check that all are exact match; is this necessary? */
+	/* that is a good place to make sure we can actually merge the given rules */
+	/* print_once for every error, that is the only input to the user */
+
+	for (i=0; i<microflow->nr_flows; i++) {
+		flow = microflow->path.flows[i];
+
+		/* TODO: move to a function? */
 		mflow->flags |= flow->flags; /* is that right? both */
 
 		microflow_merge_match(mflow, flow);
@@ -3258,9 +3262,13 @@ static int microflow_merge(struct mlx5e_tc_microflow *microflow)
 		if (err)
 			goto err;
 		microflow_merge_vxlan(mflow, flow);
-		/* TODO: mirroring? vlan? */
+		/* TODO: vlan missing */
+		/* TODO: mirroring? */
 
-		microflow->dummy_counters[i] = flow->esw_attr->counter;
+		trace("action: %X (%X)", mflow->esw_attr->action, MLX5_FLOW_CONTEXT_ACTION_DECAP);
+
+		if (flow->esw_attr->counter)
+			microflow->dummy_counters[i] = flow->esw_attr->counter;
 	}
 
 	mlx5_fc_link_dummies(mflow->esw_attr->counter, microflow->dummy_counters, microflow->nr_flows);
@@ -3408,10 +3416,10 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	struct sk_buff *skb = mf->skb;
 	struct mlx5e_tc_flow *flow;
 	struct mlx5e_tc_microflow *microflow;
-	bool is_terminating = mf->is_last ? true : false;
+	bool is_terminating = mf->last ? true : false;
 	int err;
 
-	trace("mlx5e_configure_microflow: mf->last: %d, get_tc_priv(skb): %px", mf->is_last, get_tc_priv(skb));
+	trace("mlx5e_configure_microflow: mf->last: %d, get_tc_priv(skb): %px", mf->last, get_tc_priv(skb));
 
 	/* TODO: get_tc_priv must return zero on first call, or use a translation table */
 	microflow = microflow_get(skb, priv);
@@ -3428,14 +3436,6 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	if (!flow)
 		goto err;
 
-	/* TODO: add description here */
-	if (mf->ct_state) {
-		if (microflow->ct_state && microflow->ct_state != mf->ct_state)
-			goto err;
-
-		microflow->ct_state = mf->ct_state;
-	}
-
 	microflow->path.cookies[microflow->nr_flows++] = mf->cookie;
 
 	/* TODO: extract CT 5-tuple from skb to tc_microflow (done)
@@ -3450,13 +3450,6 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	/* "Simple" rules should be handled by the normal routines */
 	if (microflow->nr_flows == 1)
 		goto err;
-
-	/* TODO: can action has mirror or other actions? */
-	/* TODO: add description here */
-	if ((microflow->ct_state & TCA_FLOWER_KEY_CT_FLAGS_NEW) && !mf->is_drop) {
-		etrace("Merge failed: can't offload +trk+new unless with a drop action");
-		goto err;
-	}
 
 	err = microflow_merge_work(microflow);
 	if (err)
