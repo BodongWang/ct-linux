@@ -21,7 +21,7 @@
 
 #include <net/netfilter/nf_conntrack_core.h>
 #include <linux/netfilter/nf_conntrack_common.h>
-#include <net/nft_gen_flow_offload.h>
+#include <net/netfilter/nft_gen_flow_offload.h>
 
 
 #ifdef NFT_GEN_FLOW_FUNC_DEBUG
@@ -182,7 +182,7 @@ static void nf_gen_flow_offload_fixup_ct_state(struct nf_conn *ct)
 		return;
 
 	ct->timeout = nfct_time_stamp + timeout;
-
+}
 
 void nf_gen_flow_offload_free(struct nf_gen_flow_offload *flow)
 {
