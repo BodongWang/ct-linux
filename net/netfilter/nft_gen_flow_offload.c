@@ -72,7 +72,7 @@ enum nf_gen_flow_offload_tuple_dir {
 struct nf_gen_flow_offload_tuple_rhash {
 	struct rhash_head		node;
 	struct nf_conntrack_tuple	tuple;
-	struct nf_conntrack_zone    zone; // TODO: FIXME 
+	struct nf_conntrack_zone    zone; // TODO: FIXME
 };
 
 
@@ -199,7 +199,7 @@ static u32 _flow_offload_hash(const void *data, u32 len, u32 seed)
 {
 	const struct nf_conntrack_tuple *tuple = data;
 	unsigned int n;
-	
+
 	n = (sizeof(tuple->src) + sizeof(tuple->dst.u3)) / sizeof(u32);
 
     /* reuse nf_conntrack hash method */
@@ -212,7 +212,7 @@ static u32 _flow_offload_hash_obj(const void *data, u32 len, u32 seed)
 {
 	const struct nf_gen_flow_offload_tuple_rhash *tuplehash = data;
 	unsigned int n;
-	
+
 	n = (sizeof(tuplehash->tuple.src) + sizeof(tuplehash->tuple.dst.u3)) / sizeof(u32);
 
 	return jhash2((u32 *)&tuplehash->tuple, n, seed ^
@@ -243,7 +243,7 @@ static const struct rhashtable_params nf_gen_flow_offload_rhash_params = {
 	.automatic_shrinking	= true,
 };
 
-static int nf_gen_flow_offload_add(struct nf_gen_flow_offload_table *flow_table, 
+static int nf_gen_flow_offload_add(struct nf_gen_flow_offload_table *flow_table,
                                                 struct nf_gen_flow_offload *flow)
 {
     // TODO: timeout
@@ -300,7 +300,7 @@ nf_gen_flow_offload_lookup(struct nf_gen_flow_offload_table *flow_table,
 
     key.tuple = *tuple;
     key.zone  = *zone;
-    
+
 	res = rhashtable_lookup_fast(&flow_table->rhashtable, &key.tuple,
 					   nf_gen_flow_offload_rhash_params);
 	if (!res)
@@ -392,8 +392,8 @@ static int nf_gen_flow_offload_gc_step(struct nf_gen_flow_offload_table *flow_ta
         if (flow->flags & FLOW_OFFLOAD_AGING) {
             nft_gen_flow_offload_stats(flow);
         }
-        
-		if (nf_gen_flow_offload_has_expired(flow) || 
+
+		if (nf_gen_flow_offload_has_expired(flow) ||
 		    (flow->flags & (FLOW_OFFLOAD_DYING |
 				            FLOW_OFFLOAD_TEARDOWN)))
 			nf_gen_flow_offload_del(flow_table, flow);
@@ -555,12 +555,12 @@ _flowtable_lookup(const struct net *net,
 static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow)
 {
     struct nf_gen_flow_offload_entry *e;
-    u64 last_used; 
-    
+    u64 last_used;
+
 	e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
 
     /* retrieve stats by callbacks */
-    spin_lock(&e->dep_lock); 
+    spin_lock(&e->dep_lock);
     last_used = e->stats.last_used;
     flow_dep_ops->get_stats(&e->stats, &e->deps);
     spin_unlock(&e->dep_lock);
@@ -569,7 +569,7 @@ static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow)
     // TODO: conn state when offload is set and FIN processed; what is last_used deduced from
     if (e->stats.last_used > last_used)
         flow->timeout += offloaded_ct_timeout;
-    
+
     return 0;
 }
 
@@ -584,7 +584,7 @@ static int nft_gen_flow_offload_destroy_dep(struct nf_gen_flow_offload *flow)
     if ((flow_dep_ops) && flow_dep_ops->destroy) {
 
         INIT_LIST_HEAD(&tmp);
-        
+
         spin_lock(&e->dep_lock);
         list_replace_init(&e->deps, &tmp);
         spin_unlock(&e->dep_lock);
@@ -669,18 +669,18 @@ int nft_gen_flow_offload_add(const struct net *net,
             entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;
             spin_unlock(&entry->dep_lock);
             return ret;
-        }                
-        
+        }
+
         spin_unlock(&entry->dep_lock);
     }
 
     if (flow_dep_ops->get_stats) {
         /* update timeout for new dep*/
-        flow->timeout = (u32)jiffies + offloaded_ct_timeout;
-        
-        nf_gen_flow_offload_set_aging(flow);        
+        entry->flow.timeout = (u32)jiffies + offloaded_ct_timeout;
+
+        nf_gen_flow_offload_set_aging(&entry->flow);
     }
-    
+
     NFT_GEN_FLOW_FUNC_EXIT();
 
     return ret;
@@ -755,9 +755,9 @@ int nft_gen_flow_offload_destroy(const struct net *net,
     thash = _flowtable_lookup(net, zone, tuple);
     if (thash != NULL) {
         dir = thash->tuple.dst.dir;
-        
+
         flow = container_of(thash, struct nf_gen_flow_offload, tuplehash[dir]);
-                
+
         nft_gen_flow_offload_destroy_dep(flow);
 
         flow->flags |= FLOW_OFFLOAD_TEARDOWN;
