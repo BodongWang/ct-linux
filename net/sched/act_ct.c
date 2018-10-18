@@ -78,8 +78,9 @@ static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
 
 	if (ctinfo == IP_CT_ESTABLISHED ||
 	    ctinfo == IP_CT_ESTABLISHED_REPLY) {
+		struct nf_conntrack_zone *zone = nf_ct_zone(ct);
 		struct nf_conntrack_tuple *tuple = nf_ct_tuple(ct, CTINFO2DIR(ctinfo));
-		struct tc_ct_offload cto = { skb, tuple };
+		struct tc_ct_offload cto = { skb, net, tuple, zone };
 		/* TODO: do we want tuple as a cookie? */
 		tc_setup_cb_call(NULL, NULL, TC_SETUP_CT, &cto, false);
 	}

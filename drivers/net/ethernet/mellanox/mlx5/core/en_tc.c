@@ -1647,17 +1647,15 @@ static int parse_cls_flower(struct mlx5e_priv *priv,
 	struct mlx5e_rep_priv *rpriv = priv->ppriv;
 	struct mlx5_eswitch_rep *rep;
 	u8 match_level;
+	u8 ct_state;
 	int err;
 
-/* TODO: make it nicer */
-#define CT_STATE_MATCH(flags) ((f->ct_state_key & f->ct_state_mask) == (flags))
+	ct_state = (f->ct_state_key & f->ct_state_mask);
 
-	/* TODO: support +new as well */
-	/* We need to store ct_state in flow */
 	/* Allow only -trk and +trk+est only */
-	if (!(CT_STATE_MATCH(0) ||
-	      CT_STATE_MATCH(TCA_FLOWER_KEY_CT_FLAGS_TRACKED |
-			     TCA_FLOWER_KEY_CT_FLAGS_ESTABLISHED))) {
+	if (!(ct_state == 0 ||
+	      ct_state == (TCA_FLOWER_KEY_CT_FLAGS_TRACKED |
+			   TCA_FLOWER_KEY_CT_FLAGS_ESTABLISHED))) {
 		netdev_warn(priv->netdev, "Unsupported ct_state used: key/mask: %x/%x\n",
 			    f->ct_state_key, f->ct_state_mask);
 		return -EOPNOTSUPP;
@@ -3234,6 +3232,10 @@ static int microflow_merge(struct mlx5e_tc_microflow *microflow)
 
 	microflow->flow = mflow;
 
+	/* check that all are exact match; is this necessary? */
+	/* that is a good place to make sure we can actually merge the given rules */
+	/* print_once for every error, that is the only input to the user */
+
 	for (i=0; i<microflow->nr_flows; i++) {
 		cookie = microflow->path.cookies[i];
 		flow = rhashtable_lookup_fast(tc_ht, &cookie, tc_ht_params);
@@ -3241,18 +3243,7 @@ static int microflow_merge(struct mlx5e_tc_microflow *microflow)
 			goto err;
 
 		microflow->path.flows[i] = flow;
-	}
 
-	/* TODO: we should allow +new with drop only */
-
-	/* check that all are exact match; is this necessary? */
-	/* that is a good place to make sure we can actually merge the given rules */
-	/* print_once for every error, that is the only input to the user */
-
-	for (i=0; i<microflow->nr_flows; i++) {
-		flow = microflow->path.flows[i];
-
-		/* TODO: move to a function? */
 		mflow->flags |= flow->flags; /* is that right? both */
 
 		microflow_merge_match(mflow, flow);
@@ -3262,13 +3253,9 @@ static int microflow_merge(struct mlx5e_tc_microflow *microflow)
 		if (err)
 			goto err;
 		microflow_merge_vxlan(mflow, flow);
-		/* TODO: vlan missing */
-		/* TODO: mirroring? */
+		/* TODO: mirroring? vlan? */
 
-		trace("action: %X (%X)", mflow->esw_attr->action, MLX5_FLOW_CONTEXT_ACTION_DECAP);
-
-		if (flow->esw_attr->counter)
-			microflow->dummy_counters[i] = flow->esw_attr->counter;
+		microflow->dummy_counters[i] = flow->esw_attr->counter;
 	}
 
 	mlx5_fc_link_dummies(mflow->esw_attr->counter, microflow->dummy_counters, microflow->nr_flows);
@@ -3416,10 +3403,9 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	struct sk_buff *skb = mf->skb;
 	struct mlx5e_tc_flow *flow;
 	struct mlx5e_tc_microflow *microflow;
-	bool is_terminating = mf->last ? true : false;
 	int err;
 
-	trace("mlx5e_configure_microflow: mf->last: %d, get_tc_priv(skb): %px", mf->last, get_tc_priv(skb));
+	trace("mlx5e_configure_microflow: mf->last: %d, get_tc_priv(skb): %px", mf->last_flow, get_tc_priv(skb));
 
 	/* TODO: get_tc_priv must return zero on first call, or use a translation table */
 	microflow = microflow_get(skb, priv);
@@ -3443,8 +3429,8 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	 * to the stored one, can we "safely" merge if there is a mismatch?
 	 */
 
-	trace("is_flow_terminating: %d", is_terminating);
-	if (!is_terminating)
+	trace("is_flow_terminating: %d", mf->last_flow);
+	if (!mf->last_flow)
 		return 0;
 
 	/* "Simple" rules should be handled by the normal routines */
