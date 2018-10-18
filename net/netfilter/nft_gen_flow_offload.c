@@ -533,7 +533,7 @@ _flowtable_lookup(const struct net *net,
 {
     struct nf_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
     struct nf_gen_flow_offload_table *flowtable;
-    struct nf_gen_flow_offload_tuple_rhash *tuplehash;
+    struct nf_gen_flow_offload_tuple_rhash *tuplehash = NULL;
 
     rcu_read_lock();
 
@@ -570,7 +570,7 @@ static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow)
     if (e->stats.last_used > last_used)
         flow->timeout += offloaded_ct_timeout;
     
-	return 0;
+    return 0;
 }
 
 /* connection is aged out, notify all dependencies  */
