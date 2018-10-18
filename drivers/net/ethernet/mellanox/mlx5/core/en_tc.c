@@ -3029,21 +3029,6 @@ static int microflow_merge_fwd(struct mlx5e_tc_flow *mflow,
 	return 0;
 }
 
-struct ip_tuple {
-	__be16 etype;
-	u8     ip_proto;
-	union {
-		__be32 src_ipv4;
-		struct in6_addr src_ipv6;
-	};
-	union {
-		__be32 dst_ipv4;
-		struct in6_addr dst_ipv6;
-	};
-	__be16 src_port;
-	__be16 dst_port;
-};
-
 static struct mlx5e_tc_flow *microflow_ct_flow(struct mlx5e_priv *priv,
 					       struct sk_buff *skb,
 					       struct nf_conntrack_tuple *nf_tuple)
@@ -3060,6 +3045,8 @@ static struct mlx5e_tc_flow *microflow_ct_flow(struct mlx5e_priv *priv,
 
 	/* TODO: is that all the flags needed? */
 	flow->flags = MLX5E_TC_FLOW_ESWITCH | MLX5E_TC_INGRESS;
+	flow->esw_attr->match_level = MLX5_MATCH_L4;
+
 	/* TODO: allocate in allow_flow? */
 	flow->esw_attr->counter = mlx5_fc_alloc();
 	if (!flow->esw_attr->counter)
@@ -3077,14 +3064,12 @@ static struct mlx5e_tc_flow *microflow_ct_flow(struct mlx5e_priv *priv,
 
 	if (skb_tunnel_info(skb)) {
 		trace("merge CT: tunnel info exist");
-		spec->match_criteria_enable = MLX5_MATCH_INNER_HEADERS;
 		headers_c = MLX5_ADDR_OF(fte_match_param, spec->match_criteria,
 					 inner_headers);
 		headers_v = MLX5_ADDR_OF(fte_match_param, spec->match_value,
 					 inner_headers);
 	} else {
 		trace("merge CT: tunnel info does not exist");
-		spec->match_criteria_enable = MLX5_MATCH_OUTER_HEADERS;
 		headers_c = MLX5_ADDR_OF(fte_match_param, spec->match_criteria,
 					 outer_headers);
 		headers_v = MLX5_ADDR_OF(fte_match_param, spec->match_value,
