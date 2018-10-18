@@ -787,7 +787,7 @@ nft_gen_flow_offload_init(const struct net *net)
 
     NFT_GEN_FLOW_FUNC_EXIT();
 
-    return nf_ct_netns_get((struct net*)net, NFPROTO_INET);
+    return 0;
 }
 
 
@@ -839,8 +839,6 @@ static void __net_exit nft_gen_flow_net_exit(struct net *net)
         nf_gen_flow_offload_table_free(flowtable);
 
         kfree(flowtable);
-
-        nf_ct_netns_put((struct net*)net, NFPROTO_INET);
     }
 }
 
