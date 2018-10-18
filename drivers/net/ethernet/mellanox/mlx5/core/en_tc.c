@@ -2974,15 +2974,16 @@ static void free_flow(struct mlx5e_tc_flow *flow)
 	kfree(flow);
 }
 
-static int microflow_merge_match(struct mlx5_flow_spec *sdst, 
-				 struct mlx5_flow_spec *ssrc)
+static int microflow_merge_match(struct mlx5e_tc_flow *flow,
+				 struct mlx5e_tc_flow *mflow)
 {
-	char* dst = (char *) sdst;
-	char* src = (char *) ssrc;
+	char *dst = (char *) &mflow->esw_attr->parse_attr->spec;
+	char *src = (char *) &flow->esw_attr->parse_attr->spec;
 	int i;
 
 	trace("merging match mflow");
 
+	/* TODO: partial support for masks? */
 	for (i = 0; i < sizeof(struct mlx5_flow_spec); i++) {
 		if (*dst == 0 && *src != 0)
 			*dst = *src;
@@ -2990,7 +2991,8 @@ static int microflow_merge_match(struct mlx5_flow_spec *sdst,
 		src++;
 	}
 
-	sdst->match_criteria_enable |= ssrc->match_criteria_enable;
+	mflow->esw_attr->match_level = max(flow->esw_attr->match_level,
+					   mflow->esw_attr->match_level);
 
 	return 0;
 }
@@ -3263,11 +3265,8 @@ static int microflow_merge(struct mlx5e_tc_microflow *microflow)
 
 		/* TODO: move to a function? */
 		mflow->flags |= flow->flags; /* is that right? both */
-		mflow->esw_attr->match_level = max(flow->esw_attr->match_level, 
-						   mflow->esw_attr->match_level);
 
-		microflow_merge_match(&mflow->esw_attr->parse_attr->spec,
-			      	      &flow->esw_attr->parse_attr->spec);
+		microflow_merge_match(mflow, flow);
 		microflow_merge_action(mflow, flow);
 		microflow_merge_fwd(mflow, flow);
 		err = microflow_merge_hdr(priv, mflow, flow);
