@@ -3447,6 +3447,10 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	if (!is_terminating)
 		return 0;
 
+	/* "Simple" rules should be handled by the normal routines */
+	if (microflow->nr_flows == 1)
+		goto err;
+
 	/* TODO: can action has mirror or other actions? */
 	/* TODO: add description here */
 	if ((microflow->ct_state & TCA_FLOWER_KEY_CT_FLAGS_NEW) && !mf->is_drop) {
