@@ -257,6 +257,8 @@ int mlx5_fc_attach(struct mlx5_core_dev *dev, struct mlx5_fc *counter, bool agin
 		return err;
 
 	counter->dummy = false;
+	/* TODO: fix */
+	counter->aging = aging;
 
 	if (aging) {
 		counter->cache.lastuse = jiffies;
@@ -371,7 +373,8 @@ void mlx5_cleanup_fc_stats(struct mlx5_core_dev *dev)
 
 		rb_erase(&counter->node, &fc_stats->counters);
 
-		mlx5_cmd_fc_free(dev, counter->id);
+		if (!counter->dummy)
+			mlx5_cmd_fc_free(dev, counter->id);
 
 		kfree(counter);
 	}
