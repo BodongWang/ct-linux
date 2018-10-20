@@ -3407,6 +3407,8 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 
 	trace("mlx5e_configure_microflow: mf->last: %d, get_tc_priv(skb): %px", mf->last_flow, get_tc_priv(skb));
 
+	/* TODO: make sanity checks here before allocating */
+
 	/* TODO: get_tc_priv must return zero on first call, or use a translation table */
 	microflow = microflow_get(skb, priv);
 	if (!microflow)
@@ -3418,6 +3420,7 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	if (!mf->cookie)
 		goto err;
 
+	/* TODO: replace it with f->flags & IN_HW? */
 	flow = rhashtable_lookup_fast(tc_ht, &mf->cookie, tc_ht_params);
 	if (!flow)
 		goto err;
