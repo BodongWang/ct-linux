@@ -72,7 +72,7 @@ enum nf_gen_flow_offload_tuple_dir {
 struct nf_gen_flow_offload_tuple_rhash {
 	struct rhash_head		node;
 	struct nf_conntrack_tuple	tuple;
-	struct nf_conntrack_zone    zone; // TODO: FIXME
+	struct nf_conntrack_zone    zone; // TODO: FIXME, less memory footprint
 };
 
 
@@ -85,7 +85,7 @@ struct nf_gen_flow_offload_tuple_rhash {
 struct nf_gen_flow_offload {
 	struct nf_gen_flow_offload_tuple_rhash		tuplehash[FLOW_OFFLOAD_DIR_MAX];
 	u32	    flags;
-	u32		timeout;
+	u64		timeout;
 };
 
 
@@ -93,7 +93,7 @@ struct nf_gen_flow_offload_entry {
     struct nf_gen_flow_offload     flow;
     struct nf_conn          *ct;
     struct rcu_head         rcu_head;
-    struct spinlock         dep_lock;
+    struct spinlock         dep_lock; // FIXME, narrow down spin_lock, don't call user callback with locked.
 	struct list_head        deps;
 	struct nf_gen_flow_ct_stat stats;
 };
@@ -246,9 +246,6 @@ static const struct rhashtable_params nf_gen_flow_offload_rhash_params = {
 static int nf_gen_flow_offload_add(struct nf_gen_flow_offload_table *flow_table,
                                                 struct nf_gen_flow_offload *flow)
 {
-    // TODO: timeout
-	flow->timeout = (u32)jiffies + (30 * HZ);
-
 	rhashtable_insert_fast(&flow_table->rhashtable,
 			       &flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].node,
 			       nf_gen_flow_offload_rhash_params);
@@ -351,10 +348,9 @@ out:
 	return err;
 }
 
-// TODO: change expired, u32 timeout vs u64 jiffies?
 static inline bool nf_gen_flow_offload_has_expired(const struct nf_gen_flow_offload *flow)
 {
-	return ((__s32)(flow->timeout - (u32)jiffies) <= 0);
+	return ((flow->flags & FLOW_OFFLOAD_AGING) && (flow->timeout <= jiffies));
 }
 
 static inline void nf_gen_flow_offload_set_aging(struct nf_gen_flow_offload *flow)
@@ -557,7 +553,7 @@ static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow)
     struct nf_gen_flow_offload_entry *e;
     u64 last_used;
 
-	e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
+    e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
 
     /* retrieve stats by callbacks */
     spin_lock(&e->dep_lock);
@@ -565,11 +561,13 @@ static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow)
     flow_dep_ops->get_stats(&e->stats, &e->deps);
     spin_unlock(&e->dep_lock);
 
-    /* update timeout with new last_used value */
-    // TODO: conn state when offload is set and FIN processed; what is last_used deduced from
-    if (e->stats.last_used > last_used)
-        flow->timeout += offloaded_ct_timeout;
+    /* update timeout with new last_used value, last_used is set as jiffies in drv;
+       When TCP is disconnected by FIN, conntrack conneciton may be held by IPS_OFFLOAD
+       until it is unset */
 
+    if (e->stats.last_used > last_used)
+        flow->timeout = e->stats.last_used + offloaded_ct_timeout;
+    
     return 0;
 }
 
@@ -636,7 +634,7 @@ int nft_gen_flow_offload_add(const struct net *net,
     if (rcu_access_pointer(gnet->flowtable) == NULL)
         return -ENOENT;
 
-    _flow_offload_debug_op(zone, tuple, "Add_Dep");
+    _flow_offload_debug_op(zone, tuple, "Add");
 
     /* lookup */
     fhash = _flowtable_lookup(net, zone, tuple);
@@ -676,7 +674,7 @@ int nft_gen_flow_offload_add(const struct net *net,
 
     if (flow_dep_ops->get_stats) {
         /* update timeout for new dep*/
-        entry->flow.timeout = (u32)jiffies + offloaded_ct_timeout;
+        entry->flow.timeout = jiffies + offloaded_ct_timeout;
 
         nf_gen_flow_offload_set_aging(&entry->flow);
     }
@@ -706,7 +704,7 @@ int nft_gen_flow_offload_remove(const struct net *net,
     if (rcu_access_pointer(gnet->flowtable) == NULL)
         return -ENOENT;
 
-    _flow_offload_debug_op(zone, tuple, "Del_dep");
+    _flow_offload_debug_op(zone, tuple, "Rmv");
 
     /* lookup */
     fhash = _flowtable_lookup(net, zone, tuple);
@@ -750,7 +748,7 @@ int nft_gen_flow_offload_destroy(const struct net *net,
     if (rcu_access_pointer(gnet->flowtable) == NULL)
         return 0;
 
-    _flow_offload_debug_op(zone, tuple, "Remove");
+    _flow_offload_debug_op(zone, tuple, "Destroy");
 
     thash = _flowtable_lookup(net, zone, tuple);
     if (thash != NULL) {
