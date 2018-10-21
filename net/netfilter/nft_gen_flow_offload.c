@@ -348,15 +348,18 @@ out:
 	return err;
 }
 
+
 static inline bool nf_gen_flow_offload_has_expired(const struct nf_gen_flow_offload *flow)
 {
-	return ((flow->flags & FLOW_OFFLOAD_AGING) && (flow->timeout <= jiffies));
+    return (((flow->flags & (FLOW_OFFLOAD_AGING | FLOW_OFFLOAD_DYING | FLOW_OFFLOAD_TEARDOWN))
+                == FLOW_OFFLOAD_AGING) && (flow->timeout <= jiffies));
 }
 
 static inline void nf_gen_flow_offload_set_aging(struct nf_gen_flow_offload *flow)
 {
     flow->flags |= FLOW_OFFLOAD_AGING;
 }
+
 
 
 static int nf_gen_flow_offload_gc_step(struct nf_gen_flow_offload_table *flow_table)
@@ -385,14 +388,17 @@ static int nf_gen_flow_offload_gc_step(struct nf_gen_flow_offload_table *flow_ta
 
 		flow = container_of(tuplehash, struct nf_gen_flow_offload, tuplehash[0]);
 
-        if (flow->flags & FLOW_OFFLOAD_AGING) {
+        if (nf_gen_flow_offload_has_expired(flow)) {
             nft_gen_flow_offload_stats(flow);
+
+            if (nf_gen_flow_offload_has_expired(flow)) {
+                flow->flags |= FLOW_OFFLOAD_TEARDOWN;
+            }
         }
 
-		if (nf_gen_flow_offload_has_expired(flow) ||
-		    (flow->flags & (FLOW_OFFLOAD_DYING |
-				            FLOW_OFFLOAD_TEARDOWN)))
-			nf_gen_flow_offload_del(flow_table, flow);
+        if (flow->flags & (FLOW_OFFLOAD_DYING |
+                        FLOW_OFFLOAD_TEARDOWN))
+            nf_gen_flow_offload_del(flow_table, flow);
 	}
 out:
 	rhashtable_walk_stop(&hti);
@@ -661,6 +667,13 @@ int nft_gen_flow_offload_add(const struct net *net,
 
     if (flow_dep_ops->add) {
         spin_lock(&entry->dep_lock);
+
+        /* checking if it was destroyed before we got spin lock*/
+        if (entry->flow.flags & (FLOW_OFFLOAD_TEARDOWN | 
+                                    FLOW_OFFLOAD_DYING)) {
+            spin_unlock(&entry->dep_lock);
+            return -EINVAL;
+        }
 
         ret = flow_dep_ops->add(dep, &entry->deps);
         if (ret && (list_empty_careful(&entry->deps))) {
