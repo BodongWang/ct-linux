@@ -26,8 +26,8 @@
 
 
 struct nf_gen_flow_ct_stat {
-    u64 bytes[2];
-    u64 packets[2];
+    u64 bytes;
+    u64 packets;
     u64 last_used; /* most latest in both directions */    
 };
 
