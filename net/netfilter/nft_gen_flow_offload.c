@@ -10,6 +10,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/netlink.h>
@@ -148,12 +149,6 @@ err_ct_refcnt:
     return NULL;
 }
 
-static void nf_gen_flow_offload_fixup_tcp(struct ip_ct_tcp *tcp)
-{
-	tcp->state = TCP_CONNTRACK_ESTABLISHED;
-	tcp->seen[0].td_maxwin = 0;
-	tcp->seen[1].td_maxwin = 0;
-}
 
 static void nf_gen_flow_offload_fixup_ct_state(struct nf_conn *ct)
 {
@@ -164,9 +159,6 @@ static void nf_gen_flow_offload_fixup_ct_state(struct nf_conn *ct)
 	int l4num;
 
 	l4num = nf_ct_protonum(ct);
-	if (l4num == IPPROTO_TCP)
-		nf_gen_flow_offload_fixup_tcp(&ct->proto.tcp);
-
 	l4proto = __nf_ct_l4proto_find(nf_ct_l3num(ct), l4num);
 	if (!l4proto)
 		return;
@@ -175,14 +167,28 @@ static void nf_gen_flow_offload_fixup_ct_state(struct nf_conn *ct)
 	if (!timeouts)
 		return;
 
-	if (l4num == IPPROTO_TCP)
-		timeout = timeouts[TCP_CONNTRACK_ESTABLISHED];
+    /* FIXME, This is not safe way, since tcp state may be changed during this update */
+	if (l4num == IPPROTO_TCP) {
+		timeout = timeouts[ct->proto.tcp.state];
+    }
 	else if (l4num == IPPROTO_UDP)
 		timeout = timeouts[UDP_CT_REPLIED];
 	else
 		return;
 
-	ct->timeout = nfct_time_stamp + timeout;
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,0,0)
+    {
+        unsigned long newtime = jiffies + timeout;
+    
+        /* Only update the timeout if the new timeout is at least
+           HZ jiffies from the old timeout. Need del_timer for race
+           avoidance (may already be dying). */
+        if (newtime - ct->timeout.expires >= HZ)
+            mod_timer_pending(&ct->timeout, newtime);
+    }
+#else
+	ct->timeout = (u32)jiffies + timeout;
+#endif
 }
 
 void nf_gen_flow_offload_free(struct nf_gen_flow_offload *flow)
@@ -270,6 +276,9 @@ static void nf_gen_flow_offload_del(struct nf_gen_flow_offload_table *flow_table
 
 	e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
 	clear_bit(IPS_OFFLOAD_BIT, &e->ct->status);
+	/* fix ct_state after OFFLOAD is cleared due to gc_worker may update 
+	   timeout with OFFLOAD_BIT set */
+	nf_gen_flow_offload_fixup_ct_state(e->ct);
 
 	nft_gen_flow_offload_destroy_dep(flow);
 }
@@ -454,7 +463,7 @@ void nf_gen_flow_offload_table_free(struct nf_gen_flow_offload_table *flow_table
 
 #endif
 
-static struct flow_offload_dep_ops *flow_dep_ops = NULL;
+static struct flow_offload_dep_ops __rcu *flow_dep_ops = NULL;
 
 static inline void _flow_offload_debug_op(const struct nf_conntrack_zone *zone,
             const struct nf_conntrack_tuple * tuple, char * op)
@@ -555,21 +564,27 @@ static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow)
 {
     struct nf_gen_flow_offload_entry *e;
     u64 last_used;
-
+    struct flow_offload_dep_ops * ops;
+    
     e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
 
-    /* retrieve stats by callbacks */
-    spin_lock(&e->dep_lock);
-    last_used = e->stats.last_used;
-    flow_dep_ops->get_stats(&e->stats, &e->deps);
-    spin_unlock(&e->dep_lock);
+    rcu_read_lock();
+    ops = rcu_dereference(flow_dep_ops);
+    if (ops && ops->get_stats) {
+        /* retrieve stats by callbacks */
+        spin_lock(&e->dep_lock);
+        last_used = e->stats.last_used;
+        ops->get_stats(&e->stats, &e->deps);
+        spin_unlock(&e->dep_lock);
 
-    /* update timeout with new last_used value, last_used is set as jiffies in drv;
-       When TCP is disconnected by FIN, conntrack conneciton may be held by IPS_OFFLOAD
-       until it is unset */
+        /* update timeout with new last_used value, last_used is set as jiffies in drv;
+           When TCP is disconnected by FIN, conntrack conneciton may be held by IPS_OFFLOAD
+           until it is unset */
 
-    if (e->stats.last_used > last_used)
-        flow->timeout = e->stats.last_used + offloaded_ct_timeout;
+        if (e->stats.last_used > last_used)
+            flow->timeout = e->stats.last_used + offloaded_ct_timeout;
+    }
+    rcu_read_unlock();
     
     return 0;
 }
@@ -578,15 +593,21 @@ static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow)
 static void _flow_offload_destroy_dep_async(struct work_struct *work)
 {
     struct nf_gen_flow_offload_entry *e;
+    struct flow_offload_dep_ops * ops;
 
     e = container_of(work, struct nf_gen_flow_offload_entry, work);
 
     pr_debug("async destroy for ct %p", &e->flow);
 
-    spin_lock(&e->dep_lock);
-    flow_dep_ops->destroy(&e->deps);
-    spin_unlock(&e->dep_lock);
-
+    rcu_read_lock();
+    ops = rcu_dereference(flow_dep_ops);
+    if (ops && ops->destroy) {
+        spin_lock(&e->dep_lock);
+        ops->destroy(&e->deps);
+        spin_unlock(&e->dep_lock);
+    }
+    rcu_read_unlock();
+    
     nf_gen_flow_offload_free(&e->flow);
 }
 
@@ -597,8 +618,7 @@ static int nft_gen_flow_offload_destroy_dep(struct nf_gen_flow_offload *flow)
 
     e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
 
-    if ((flow_dep_ops) && flow_dep_ops->destroy) {
-
+    if (rcu_access_pointer(flow_dep_ops)) {
         spin_lock(&e->dep_lock);        
         if (!list_empty_careful(&e->deps)) {
             async_needed = true;
@@ -620,7 +640,7 @@ static int nft_gen_flow_offload_destroy_dep(struct nf_gen_flow_offload *flow)
 
 void nft_gen_flow_offload_dep_ops_register(struct flow_offload_dep_ops * ops)
 {
-    flow_dep_ops = ops;
+    rcu_assign_pointer(flow_dep_ops, ops);
 }
 
 EXPORT_SYMBOL_GPL(nft_gen_flow_offload_dep_ops_register);
@@ -628,7 +648,17 @@ EXPORT_SYMBOL_GPL(nft_gen_flow_offload_dep_ops_register);
 
 void nft_gen_flow_offload_dep_ops_unregister(struct flow_offload_dep_ops * ops)
 {
-    flow_dep_ops = NULL;
+    struct nf_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(&init_net);
+    struct nf_gen_flow_offload_table *flowtable;
+    
+    rcu_assign_pointer(flow_dep_ops, NULL);
+
+    rcu_read_lock();
+    flowtable = rcu_dereference(gnet->flowtable);
+
+    /* cleanup all connections */
+	nf_gen_flow_offload_table_iterate(flowtable, nf_gen_flow_offload_table_do_cleanup, NULL);
+	rcu_read_unlock();
 }
 
 EXPORT_SYMBOL_GPL(nft_gen_flow_offload_dep_ops_unregister);
@@ -646,11 +676,12 @@ int nft_gen_flow_offload_add(const struct net *net,
     struct nf_gen_flow_offload *flow;
     struct nf_gen_flow_offload_entry *entry;
     struct nf_conn *ct;
-    int ret;
+    int ret = 0;
+    struct flow_offload_dep_ops * ops;
 
     NFT_GEN_FLOW_FUNC_ENTRY();
 
-    if (!flow_dep_ops)
+    if (rcu_access_pointer(flow_dep_ops) == NULL)
         return -EPERM;
 
     if (rcu_access_pointer(gnet->flowtable) == NULL)
@@ -681,32 +712,43 @@ int nft_gen_flow_offload_add(const struct net *net,
         entry = container_of(flow, struct nf_gen_flow_offload_entry, flow);
     }
 
-    if (flow_dep_ops->add) {
+
+    rcu_read_lock();
+    ops = rcu_dereference(flow_dep_ops);
+    if (ops && ops->add) {
         spin_lock(&entry->dep_lock);
 
         /* checking if it was destroyed before we got spin lock*/
         if (entry->flow.flags & (FLOW_OFFLOAD_TEARDOWN | 
                                     FLOW_OFFLOAD_DYING)) {
             spin_unlock(&entry->dep_lock);
+            rcu_read_unlock();            
             return -EINVAL;
         }
 
-        ret = flow_dep_ops->add(dep, &entry->deps);
+        ret = ops->add(dep, &entry->deps);
         if (ret && (list_empty_careful(&entry->deps))) {
             entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;
+            
             spin_unlock(&entry->dep_lock);
+            rcu_read_unlock();            
             return ret;
         }
 
         spin_unlock(&entry->dep_lock);
+
+        if (ops->get_stats) {
+            /* update timeout for new dep*/
+            entry->flow.timeout = jiffies + offloaded_ct_timeout;
+
+            nf_gen_flow_offload_set_aging(&entry->flow);
+        }
+    } else {
+        /* mark as teardown anyway */
+        entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;        
     }
 
-    if (flow_dep_ops->get_stats) {
-        /* update timeout for new dep*/
-        entry->flow.timeout = jiffies + offloaded_ct_timeout;
-
-        nf_gen_flow_offload_set_aging(&entry->flow);
-    }
+    rcu_read_unlock();
 
     NFT_GEN_FLOW_FUNC_EXIT();
 
@@ -724,10 +766,11 @@ int nft_gen_flow_offload_remove(const struct net *net,
     enum nf_gen_flow_offload_tuple_dir dir;
     struct nf_gen_flow_offload_entry *entry;
     int ret;
+    struct flow_offload_dep_ops * ops;
 
     NFT_GEN_FLOW_FUNC_ENTRY();
 
-    if (!flow_dep_ops)
+    if (rcu_access_pointer(flow_dep_ops) == NULL)
         return -EPERM;
 
     if (rcu_access_pointer(gnet->flowtable) == NULL)
@@ -741,16 +784,20 @@ int nft_gen_flow_offload_remove(const struct net *net,
         dir = fhash->tuple.dst.dir;
         entry = container_of(fhash, struct nf_gen_flow_offload_entry, flow.tuplehash[dir]);
 
-        /* try to remove it anyway, RCU holds this entry and spin can help with list operation */            
-        if (flow_dep_ops->remove) {
+        rcu_read_lock();
+        ops = rcu_dereference(flow_dep_ops);
+        if (ops && ops->remove) {
+            /* try to remove it anyway, RCU holds this entry 
+                and spin can help with list operation */            
             spin_lock(&entry->dep_lock);
-            flow_dep_ops->remove(dep, &entry->deps);
+            ops->remove(dep, &entry->deps);
             spin_unlock(&entry->dep_lock);
         }
+        rcu_read_unlock();
+
     } else {
         ret = -ENOENT;
     }
-
 
     NFT_GEN_FLOW_FUNC_EXIT();
 
