@@ -84,8 +84,8 @@ struct nf_gen_flow_offload_tuple_rhash {
 
 struct nf_gen_flow_offload {
 	struct nf_gen_flow_offload_tuple_rhash		tuplehash[FLOW_OFFLOAD_DIR_MAX];
-	u32	    flags;
-	u64		timeout;
+	u32    flags;
+	u64    timeout;
 };
 
 
@@ -95,6 +95,7 @@ struct nf_gen_flow_offload_entry {
     struct rcu_head         rcu_head;
     struct spinlock         dep_lock; // FIXME, narrow down spin_lock, don't call user callback with locked.
 	struct list_head        deps;
+	struct work_struct      work;
 	struct nf_gen_flow_ct_stat stats;
 };
 
@@ -270,10 +271,7 @@ static void nf_gen_flow_offload_del(struct nf_gen_flow_offload_table *flow_table
 	e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
 	clear_bit(IPS_OFFLOAD_BIT, &e->ct->status);
 
-    // TODO: FIXME
 	nft_gen_flow_offload_destroy_dep(flow);
-
-	nf_gen_flow_offload_free(flow);
 }
 
 void nf_gen_flow_offload_teardown(struct nf_gen_flow_offload *flow)
@@ -347,7 +345,6 @@ out:
 
 	return err;
 }
-
 
 static inline bool nf_gen_flow_offload_has_expired(const struct nf_gen_flow_offload *flow)
 {
@@ -578,23 +575,42 @@ static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow)
 }
 
 /* connection is aged out, notify all dependencies  */
+static void _flow_offload_destroy_dep_async(struct work_struct *work)
+{
+    struct nf_gen_flow_offload_entry *e;
+
+    e = container_of(work, struct nf_gen_flow_offload_entry, work);
+
+    pr_debug("async destroy for ct %p", &e->flow);
+
+    spin_lock(&e->dep_lock);
+    flow_dep_ops->destroy(&e->deps);
+    spin_unlock(&e->dep_lock);
+
+    nf_gen_flow_offload_free(&e->flow);
+}
+
 static int nft_gen_flow_offload_destroy_dep(struct nf_gen_flow_offload *flow)
 {
     struct nf_gen_flow_offload_entry *e;
-    struct list_head tmp;
+    bool async_needed = false;
 
-	e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
+    e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
 
     if ((flow_dep_ops) && flow_dep_ops->destroy) {
 
-        INIT_LIST_HEAD(&tmp);
-
-        spin_lock(&e->dep_lock);
-        list_replace_init(&e->deps, &tmp);
+        spin_lock(&e->dep_lock);        
+        if (!list_empty_careful(&e->deps)) {
+            async_needed = true;
+        }
         spin_unlock(&e->dep_lock);
-
-        flow_dep_ops->destroy(&tmp);
     }
+
+    if (async_needed) {
+        INIT_WORK(&e->work, _flow_offload_destroy_dep_async);
+        schedule_work(&e->work);
+    } else
+        nf_gen_flow_offload_free(&e->flow);
 
     return 0;
 }
@@ -725,13 +741,10 @@ int nft_gen_flow_offload_remove(const struct net *net,
         dir = fhash->tuple.dst.dir;
         entry = container_of(fhash, struct nf_gen_flow_offload_entry, flow.tuplehash[dir]);
 
+        /* try to remove it anyway, RCU holds this entry and spin can help with list operation */            
         if (flow_dep_ops->remove) {
             spin_lock(&entry->dep_lock);
-
             flow_dep_ops->remove(dep, &entry->deps);
-            if (list_empty_careful(&entry->deps)) {
-                entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;
-            }
             spin_unlock(&entry->dep_lock);
         }
     } else {
@@ -769,9 +782,7 @@ int nft_gen_flow_offload_destroy(const struct net *net,
 
         flow = container_of(thash, struct nf_gen_flow_offload, tuplehash[dir]);
 
-        nft_gen_flow_offload_destroy_dep(flow);
-
-        flow->flags |= FLOW_OFFLOAD_TEARDOWN;
+        flow->flags |= FLOW_OFFLOAD_TEARDOWN; // FIXME: replace flag set by set_and_test to start async work
     }
 
     NFT_GEN_FLOW_FUNC_EXIT();
