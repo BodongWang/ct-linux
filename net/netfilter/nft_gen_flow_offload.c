@@ -20,6 +20,9 @@
 #include <linux/rhashtable.h>
 #include <net/ip.h> /* for ipv4 options. */
 
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+
 #include <net/netfilter/nf_conntrack_core.h>
 #include <linux/netfilter/nf_conntrack_common.h>
 #include <net/netfilter/nft_gen_flow_offload.h>
@@ -50,6 +53,8 @@ static inline struct nf_gen_flow_offload_net *nft_gen_flow_offload_pernet(const 
 static unsigned int offloaded_ct_timeout = 30*HZ;
 
 module_param(offloaded_ct_timeout, uint, 0644);
+
+static atomic_t offloaded_flow_cnt;
 
 #define PORTING_FLOW_TABLE
 
@@ -179,7 +184,7 @@ static void nf_gen_flow_offload_fixup_ct_state(struct nf_conn *ct)
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(4,0,0)
     {
         unsigned long newtime = jiffies + timeout;
-    
+
         /* Only update the timeout if the new timeout is at least
            HZ jiffies from the old timeout. Need del_timer for race
            avoidance (may already be dying). */
@@ -276,7 +281,10 @@ static void nf_gen_flow_offload_del(struct nf_gen_flow_offload_table *flow_table
 
 	e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
 	clear_bit(IPS_OFFLOAD_BIT, &e->ct->status);
-	/* fix ct_state after OFFLOAD is cleared due to gc_worker may update 
+
+    atomic_dec(&offloaded_flow_cnt);
+
+	/* fix ct_state after OFFLOAD is cleared due to gc_worker may update
 	   timeout with OFFLOAD_BIT set */
 	nf_gen_flow_offload_fixup_ct_state(e->ct);
 
@@ -505,6 +513,8 @@ static int _flowtable_add_entry(const struct net *net, int zone_id,
 
         rcu_read_unlock();
 
+        atomic_inc(&offloaded_flow_cnt);
+
         return ret;
     }
 
@@ -565,7 +575,7 @@ static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow)
     struct nf_gen_flow_offload_entry *e;
     u64 last_used;
     struct flow_offload_dep_ops * ops;
-    
+
     e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
 
     rcu_read_lock();
@@ -581,11 +591,11 @@ static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow)
            When TCP is disconnected by FIN, conntrack conneciton may be held by IPS_OFFLOAD
            until it is unset */
 
-        if (e->stats.last_used > last_used)
+        if ((last_used == 0) || (e->stats.last_used > last_used))
             flow->timeout = e->stats.last_used + offloaded_ct_timeout;
     }
     rcu_read_unlock();
-    
+
     return 0;
 }
 
@@ -607,7 +617,7 @@ static void _flow_offload_destroy_dep_async(struct work_struct *work)
         spin_unlock(&e->dep_lock);
     }
     rcu_read_unlock();
-    
+
     nf_gen_flow_offload_free(&e->flow);
 }
 
@@ -619,7 +629,7 @@ static int nft_gen_flow_offload_destroy_dep(struct nf_gen_flow_offload *flow)
     e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
 
     if (rcu_access_pointer(flow_dep_ops)) {
-        spin_lock(&e->dep_lock);        
+        spin_lock(&e->dep_lock);
         if (!list_empty_careful(&e->deps)) {
             async_needed = true;
         }
@@ -650,7 +660,7 @@ void nft_gen_flow_offload_dep_ops_unregister(struct flow_offload_dep_ops * ops)
 {
     struct nf_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(&init_net);
     struct nf_gen_flow_offload_table *flowtable;
-    
+
     rcu_assign_pointer(flow_dep_ops, NULL);
 
     rcu_read_lock();
@@ -704,6 +714,9 @@ int nft_gen_flow_offload_add(const struct net *net,
         ret = _check_ct_status(ct);
         if (ret ==  0) {
             ret = _flowtable_add_entry(net, zone->id, ct, &flow);
+        } else if (ret == -EEXIST) {
+            /* cocurrency, tell user to try again */
+            ret = -EAGAIN;
         }
 
         nf_ct_put(ct);
@@ -719,19 +732,19 @@ int nft_gen_flow_offload_add(const struct net *net,
         spin_lock(&entry->dep_lock);
 
         /* checking if it was destroyed before we got spin lock*/
-        if (entry->flow.flags & (FLOW_OFFLOAD_TEARDOWN | 
+        if (entry->flow.flags & (FLOW_OFFLOAD_TEARDOWN |
                                     FLOW_OFFLOAD_DYING)) {
             spin_unlock(&entry->dep_lock);
-            rcu_read_unlock();            
+            rcu_read_unlock();
             return -EINVAL;
         }
 
         ret = ops->add(dep, &entry->deps);
         if (ret && (list_empty_careful(&entry->deps))) {
             entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;
-            
+
             spin_unlock(&entry->dep_lock);
-            rcu_read_unlock();            
+            rcu_read_unlock();
             return ret;
         }
 
@@ -745,7 +758,7 @@ int nft_gen_flow_offload_add(const struct net *net,
         }
     } else {
         /* mark as teardown anyway */
-        entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;        
+        entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;
     }
 
     rcu_read_unlock();
@@ -787,8 +800,8 @@ int nft_gen_flow_offload_remove(const struct net *net,
         rcu_read_lock();
         ops = rcu_dereference(flow_dep_ops);
         if (ops && ops->remove) {
-            /* try to remove it anyway, RCU holds this entry 
-                and spin can help with list operation */            
+            /* try to remove it anyway, RCU holds this entry
+                and spin can help with list operation */
             spin_lock(&entry->dep_lock);
             ops->remove(dep, &entry->deps);
             spin_unlock(&entry->dep_lock);
@@ -859,6 +872,78 @@ nft_gen_flow_offload_init(const struct net *net)
     return 0;
 }
 
+#define SANITY_TEST
+#ifdef SANITY_TEST
+
+static unsigned int sanity_src_ip = 0xc0a86e01;
+module_param(sanity_src_ip, uint, 0644);
+
+static unsigned int sanity_dst_ip = 0xc0a86e8B;
+module_param(sanity_dst_ip, uint, 0644);
+
+static unsigned int sanity_l3prot = NFPROTO_IPV4;
+module_param(sanity_l3prot, uint, 0644);
+
+static unsigned int sanity_l4prot = 16;
+module_param(sanity_l4prot, uint, 0644);
+
+
+static unsigned int sanity_src_port = 1000;
+module_param(sanity_src_port, uint, 0644);
+
+static unsigned int sanity_dst_port = 22;
+module_param(sanity_dst_port, uint, 0644);
+
+
+enum {
+    OFFLOADED_DEBUG_EN_SANITY_BIT,
+    OFFLOADED_DEBUG_EN_SANITY = (1 << OFFLOADED_DEBUG_EN_SANITY_BIT),
+
+    OFFLOADED_DEBUG_EN_SANITY_STATS_BIT,
+    OFFLOADED_DEBUG_EN_SANITY_STATS = (1 << OFFLOADED_DEBUG_EN_SANITY_STATS_BIT),
+
+};
+
+
+static unsigned int sanity_flags = 0;
+module_param(sanity_flags, uint, 0644);
+
+static int _dummy_dep_add(void * ptr, struct list_head *head)
+{
+    pr_debug("_dummy_dep_add %p", ptr);
+
+    return 0;
+}
+
+static void _dummy_dep_del(void * ptr, struct list_head *head)
+{
+    pr_debug("_dummy_dep_del %p", ptr);
+}
+
+static int _dummy_dep_destroy(struct list_head *head)
+{
+    pr_debug("_dummy_dep_destroy");
+
+    return 0;
+}
+
+static void _dummy_get_stat(struct nf_gen_flow_ct_stat *stats, struct list_head *head)
+{
+    pr_debug("_dummy_get_stat");
+    if (sanity_flags & OFFLOADED_DEBUG_EN_SANITY_STATS)
+        stats->last_used = jiffies;
+}
+
+
+static struct flow_offload_dep_ops dummy_ops = {
+    .add        = _dummy_dep_add,
+    .remove     = _dummy_dep_del,
+    .destroy    = _dummy_dep_destroy,
+    .get_stats  = _dummy_get_stat
+};
+
+
+#endif
 
 static int __net_init nft_gen_flow_net_init(struct net *net)
 {
@@ -870,26 +955,27 @@ static int __net_init nft_gen_flow_net_init(struct net *net)
 
     nft_gen_flow_offload_init(net);
 
-#if 0
-    // for debug only
-    {
+#ifdef SANITY_TEST
+    if ((sanity_flags & OFFLOADED_DEBUG_EN_SANITY) && (net == &init_net)) {
         struct nf_conntrack_tuple test_tuple;
         struct nf_conntrack_zone test_zone = {NF_CT_DEFAULT_ZONE_ID, 0, NF_CT_DEFAULT_ZONE_DIR};
 
+        nft_gen_flow_offload_dep_ops_register(&dummy_ops);
+
         memset(&test_tuple, 0, sizeof(test_tuple));
 
-        test_tuple.src.u3.ip = htonl(0xc0a86e01);
-        test_tuple.src.u.tcp.port = htons(51171);
-        test_tuple.src.l3num = AF_INET;
+        test_tuple.src.u3.ip = htonl(sanity_src_ip);
+        test_tuple.src.u.tcp.port = htons(sanity_src_port);
+        test_tuple.src.l3num = sanity_l3prot;
 
-        test_tuple.dst.u3.ip = htonl(0xc0a86e84);
-        test_tuple.dst.u.tcp.port = htons(22);
-        test_tuple.dst.protonum = IPPROTO_TCP;
+        test_tuple.dst.u3.ip = htonl(sanity_dst_ip);
+        test_tuple.dst.u.tcp.port = htons(sanity_dst_port);
+        test_tuple.dst.protonum = sanity_l4prot;
         test_tuple.dst.dir = NF_CT_ZONE_DIR_ORIG;
 
-        nft_gen_flow_offload_add(net, &test_zone, &test_tuple);
+        nft_gen_flow_offload_add(net, &test_zone, &test_tuple, (void*)0xdeadbeef);
 
-        nft_gen_flow_offload_destroy(net, &test_zone, &test_tuple);
+        //nft_gen_flow_offload_destroy(net, &test_zone, &test_tuple);
     }
 #endif
     return 0;
@@ -900,6 +986,11 @@ static void __net_exit nft_gen_flow_net_exit(struct net *net)
     struct nf_gen_flow_offload_net *gnet = nft_gen_flow_offload_pernet(net);
     struct nf_gen_flow_offload_table * flowtable = rcu_access_pointer(gnet->flowtable);
 
+#ifdef SANITY_TEST
+    if ((sanity_flags & OFFLOADED_DEBUG_EN_SANITY) && (net == &init_net)) {
+        nft_gen_flow_offload_dep_ops_unregister(&dummy_ops);
+    }
+#endif
     if (flowtable != NULL) {
         rcu_assign_pointer(gnet->flowtable, NULL);
 
@@ -919,15 +1010,67 @@ static struct pernet_operations nft_gen_flow_offload_net_ops = {
     .size           = sizeof(struct nf_gen_flow_offload_net),
 };
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
 
+/* proc_create_single_data can't work in 3.10,
+   need full seq operations to support single data show,
+   implement it soon */
+int __init nft_gen_flow_offload_proc_init(void)
+{
+    return 0;
+}
+
+void __exit nft_gen_flow_offload_proc_exit(void)
+{
+    return;
+}
+
+#else
+
+static int nf_conntrack_offloaded_proc_show(struct seq_file *m, void *v)
+{
+    int flow_cnt;
+
+    flow_cnt = atomic_read(&offloaded_flow_cnt);
+
+	seq_printf(m, "total %d flows offloaded \n",
+		            flow_cnt);
+	return 0;
+}
+
+int __init nft_gen_flow_offload_proc_init(void)
+{
+	struct proc_dir_entry *p;
+	int rc = -ENOMEM;
+
+	p = proc_create_single_data("nf_conntrack_offloaded", 0444, init_net.proc_net,
+			                    nf_conntrack_offloaded_proc_show, NULL);
+	if (!p) {
+	    pr_debug("can't make nf_conntrack_offloaded proc_entry");
+		return rc;
+    }
+
+    return 0;
+}
+
+void __exit nft_gen_flow_offload_proc_exit(void)
+{
+	remove_proc_entry("nf_conntrack_offloaded", init_net.proc_net);
+}
+
+#endif
 
 static int __init nft_gen_flow_offload_module_init(void)
 {
     int err;
 
+	atomic_set(&offloaded_flow_cnt, 0);
+
     err = register_pernet_subsys(&nft_gen_flow_offload_net_ops);
     if (err < 0)
         return err;
+
+    nft_gen_flow_offload_proc_init();
 
     return 0;
 }
@@ -936,6 +1079,8 @@ static int __init nft_gen_flow_offload_module_init(void)
 
 static void __exit nft_gen_flow_offload_module_exit(void)
 {
+    nft_gen_flow_offload_proc_exit();
+
     unregister_pernet_subsys(&nft_gen_flow_offload_net_ops);
 }
 
