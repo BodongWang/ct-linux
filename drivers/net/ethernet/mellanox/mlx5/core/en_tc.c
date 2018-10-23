@@ -3022,24 +3022,32 @@ static void microflow_merge_action(struct mlx5e_tc_flow *mflow,
 	mflow->esw_attr->action |= flow->esw_attr->action;
 }
 
-static void microflow_merge_fwd(struct mlx5e_tc_flow *mflow,
-				struct mlx5e_tc_flow *flow)
+static int microflow_merge_mirred(struct mlx5e_tc_flow *mflow,
+				  struct mlx5e_tc_flow *flow)
 {
-	if (!(flow->esw_attr->action & MLX5_FLOW_CONTEXT_ACTION_FWD_DEST))
-		return;
+	struct mlx5_esw_flow_attr *dst_attr = mflow->esw_attr;
+	struct mlx5_esw_flow_attr *src_attr = flow->esw_attr;
+	int out_count;
+	int i, j;
 
-	memcpy(mflow->esw_attr->out_rep, flow->esw_attr->out_rep, 
-				sizeof(mflow->esw_attr->out_rep));
-	memcpy(mflow->esw_attr->out_mdev, flow->esw_attr->out_mdev, 
-				sizeof(mflow->esw_attr->out_mdev));
+	if (!(src_attr->action & MLX5_FLOW_CONTEXT_ACTION_FWD_DEST))
+		return 0;
 
-	mflow->esw_attr->out_count = flow->esw_attr->out_count;
-}
+	out_count = dst_attr->out_count + src_attr->out_count;
+	if (out_count > MLX5_MAX_FLOW_FWD_VPORTS)
+		return -1;
 
-static void microflow_merge_mirror(struct mlx5e_tc_flow *mflow,
-				   struct mlx5e_tc_flow *flow)
-{
-	mflow->esw_attr->mirror_count = flow->esw_attr->mirror_count;
+	for (i = 0, j = dst_attr->out_count; j < out_count; i++, j++) {
+		dst_attr->out_rep[j] = src_attr->out_rep[i];
+		dst_attr->out_mdev[j] = src_attr->out_mdev[i];
+	}
+
+	dst_attr->out_count = out_count;
+	dst_attr->mirror_count += src_attr->mirror_count;
+
+	atrace(dst_attr->mirror_count < out_count);
+
+	return 0;
 }
 
 static struct mlx5e_tc_flow *microflow_ct_flow(struct mlx5e_priv *priv,
@@ -3285,8 +3293,9 @@ static int __microflow_merge(struct mlx5e_tc_microflow *microflow)
 
 		microflow_merge_match(mflow, flow);
 		microflow_merge_action(mflow, flow);
-		microflow_merge_fwd(mflow, flow);
-		microflow_merge_mirror(mflow, flow);
+		err = microflow_merge_mirred(mflow, flow);
+		if (err)
+			goto err;
 		err = microflow_merge_hdr(priv, mflow, flow);
 		if (err)
 			goto err;

@@ -89,6 +89,7 @@ static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
 		tc_setup_cb_call(NULL, NULL, TC_SETUP_CT, &cto, false);
 	}
 
+	/* TODO: must check this code very carefully; move to another function */
 	if (ca->commit) {
 		u32 *labels = ca->labels;
 		u32 *labels_m = ca->labels_mask;
