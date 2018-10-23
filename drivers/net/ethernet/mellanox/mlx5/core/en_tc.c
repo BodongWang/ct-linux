@@ -2937,7 +2937,7 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 		goto err_free;
 	}
 
-	trace("is_flow_terminating(flow): %d, chain_index: %d", is_flow_simple(flow, chain_index), chain_index);
+	trace("is_flow_simple(flow): %d, chain_index: %d", is_flow_simple(flow, chain_index), chain_index);
 	if (is_flow_simple(flow, chain_index)) {
 		flow->flags |= MLX5E_TC_FLOW_SIMPLE;
 
