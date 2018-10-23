@@ -3441,6 +3441,12 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 	if (err && err != -EEXIST)
 		goto err_free;
 
+	if (err == -EEXIST) {
+		kfree(flow->esw_attr->counter);
+		kvfree(flow->esw_attr->parse_attr);
+		kfree(flow);
+	}
+
 out:
 	/* TODO: this 5-tuple (dummy) flow won't get free by anyone, only once the driver unloads,
 	 * or by the flow_offload module.
@@ -3448,7 +3454,7 @@ out:
 
 	/* TODO: if "action ct" is part of the last rule (very unlikely), we
 	 * might have a memory leak (microflow) */
-	microflow->path.cookies[microflow->nr_flows++] = flow->cookie;
+	microflow->path.cookies[microflow->nr_flows++] = cookie;
 	return 0;
 
 err_free:
