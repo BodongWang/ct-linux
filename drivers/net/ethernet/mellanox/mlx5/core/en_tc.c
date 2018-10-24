@@ -2976,8 +2976,11 @@ static struct mlx5e_tc_flow *alloc_flow(struct mlx5e_priv *priv)
 	int attr_size = sizeof(struct mlx5_esw_flow_attr);
 	int err;
 
-	flow = kzalloc(sizeof(*flow) + attr_size, GFP_KERNEL);
-	parse_attr = kvzalloc(sizeof(*parse_attr), GFP_KERNEL);
+	/* TODO sometimes called from tc_classify() so we
+	 * alloc with GFP_ATOMIC. optimize later.
+	 */
+	flow = kzalloc(sizeof(*flow) + attr_size, GFP_ATOMIC);
+	parse_attr = kvzalloc(sizeof(*parse_attr), GFP_ATOMIC);
 	if (!parse_attr || !flow) {
 		err = -ENOMEM;
 		goto err_free;

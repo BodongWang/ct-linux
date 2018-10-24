@@ -236,7 +236,8 @@ struct mlx5_fc *mlx5_fc_alloc(void)
 {
 	struct mlx5_fc *counter;
 
-	counter = kzalloc(sizeof(*counter), GFP_KERNEL);
+	/* TODO called from atomic context. fix me */
+	counter = kzalloc(sizeof(*counter), GFP_ATOMIC);
 	if (!counter)
 		return ERR_PTR(-ENOMEM);
 
