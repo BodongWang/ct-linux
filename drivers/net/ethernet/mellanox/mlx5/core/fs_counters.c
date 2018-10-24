@@ -232,17 +232,15 @@ static void mlx5_fc_stats_work(struct work_struct *work)
 	fc_stats->next_query = now + fc_stats->sampling_interval;
 }
 
-struct mlx5_fc *mlx5_fc_alloc(void)
+struct mlx5_fc *mlx5_fc_alloc(gfp_t flags)
 {
 	struct mlx5_fc *counter;
 
-	/* TODO called from atomic context. fix me */
-	counter = kzalloc(sizeof(*counter), GFP_ATOMIC);
+	counter = kzalloc(sizeof(*counter), flags);
 	if (!counter)
 		return ERR_PTR(-ENOMEM);
 
 	counter->dummy = true;
-	/* TODO: fix */
 	counter->aging = true;
 
 	return counter;
@@ -258,12 +256,10 @@ int mlx5_fc_attach(struct mlx5_core_dev *dev, struct mlx5_fc *counter, bool agin
 		return err;
 
 	counter->dummy = false;
-	/* TODO: fix */
 	counter->aging = aging;
 
 	if (aging) {
 		counter->cache.lastuse = jiffies;
-		counter->aging = true;
 
 		spin_lock(&fc_stats->addlist_lock);
 		list_add(&counter->list, &fc_stats->addlist);
@@ -280,7 +276,7 @@ struct mlx5_fc *mlx5_fc_create(struct mlx5_core_dev *dev, bool aging)
 	struct mlx5_fc *counter;
 	int err;
 
-	counter = mlx5_fc_alloc();
+	counter = mlx5_fc_alloc(GFP_KERNEL);
 	if (!counter)
 		return ERR_PTR(-ENOMEM);
 

@@ -88,7 +88,7 @@ mlx5_eswitch_add_offloaded_rule(struct mlx5_eswitch *esw,
 		int err = mlx5_fc_attach(esw->dev, attr->counter, true);
 		if (err) {
 			rule = ERR_PTR(err);
-			goto err_out;
+			goto err_counter_alloc;
 		}
 		dest[i].type = MLX5_FLOW_DESTINATION_TYPE_COUNTER;
 		dest[i].counter = attr->counter;
@@ -127,10 +127,14 @@ mlx5_eswitch_add_offloaded_rule(struct mlx5_eswitch *esw,
 
 	rule = mlx5_add_flow_rules(ft, spec, &flow_act, dest, i);
 	if (IS_ERR(rule))
-		goto err_out;
+		goto err_add_rule;
 	esw->offloads.num_flows++;
 
-err_out:
+	return rule;
+
+err_add_rule:
+	mlx5_fc_destroy(esw->dev, attr->counter);
+err_counter_alloc:
 	return rule;
 }
 

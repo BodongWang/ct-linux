@@ -790,6 +790,7 @@ mlx5e_tc_add_nic_flow(struct mlx5e_priv *priv,
 	if (attr->action & MLX5_FLOW_CONTEXT_ACTION_MOD_HDR) {
 		err = mlx5e_attach_mod_hdr(priv, flow, parse_attr);
 		flow_act.modify_id = attr->mod_hdr_id;
+		/* TODO: fix NIC code */
 		kfree(parse_attr->mod_hdr_actions);
 		if (err) {
 			rule = ERR_PTR(err);
@@ -918,11 +919,11 @@ mlx5e_tc_add_fdb_flow(struct mlx5e_priv *priv,
 		rule = ERR_PTR(err);
 		goto err_add_vlan;
 		/* TODO: upstream bug? who will free mod_hdr here? */
+		/* might be fixed with below changes? */
 	}
 
 	if (attr->action & MLX5_FLOW_CONTEXT_ACTION_MOD_HDR) {
 		err = mlx5e_attach_mod_hdr(priv, flow, parse_attr);
-		kfree(parse_attr->mod_hdr_actions);
 		if (err) {
 			rule = ERR_PTR(err);
 			goto err_mod_hdr;
@@ -943,6 +944,10 @@ mlx5e_tc_add_fdb_flow(struct mlx5e_priv *priv,
 				goto err_fwd_rule;
 		}
 	}
+
+	/* NOTE: free mod_hdr_actions on success, otherwise caller responsibility */
+	kfree(parse_attr->mod_hdr_actions);
+
 	return rule;
 
 err_fwd_rule:
@@ -982,7 +987,6 @@ static void mlx5e_tc_del_microflow(struct mlx5e_tc_microflow *microflow)
 	microflow_free(microflow);
 }
 
-/* TODO: make sure we are freeing all the memroy */
 static void mlx5e_tc_del_fdb_flow(struct mlx5e_priv *priv,
 				  struct mlx5e_tc_flow *flow)
 {
@@ -2887,6 +2891,7 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 	struct rhashtable *tc_ht = get_tc_ht(priv);
 	u32 chain_index = f->common.chain_index;
 	struct mlx5e_tc_flow *flow;
+	struct mlx5_fc *counter;
 	int attr_size, err = 0;
 	u8 flow_flags = 0;
 
@@ -2935,11 +2940,12 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 		flow->rule[0] = mlx5e_tc_add_nic_flow(priv, parse_attr, flow);
 	}
 
-	flow->esw_attr->counter = mlx5_fc_alloc();
-	if (IS_ERR(flow->esw_attr->counter)) {
-		err = PTR_ERR(flow->esw_attr->counter);
+	counter = mlx5_fc_alloc(GFP_KERNEL);
+	if (IS_ERR(counter)) {
+		err = PTR_ERR(counter);
 		goto err_free;
 	}
+	flow->esw_attr->counter = counter;
 
 	trace("is_flow_simple(flow): %d, chain_index: %d", is_flow_simple(flow, chain_index), chain_index);
 	if (is_flow_simple(flow, chain_index)) {
@@ -2947,7 +2953,7 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 
 		err = configure_fdb(flow);
 		if (err && err != -EAGAIN)
-			goto err_free_counter;
+			goto err_free;
 	}
 
 	if (flow->flags & MLX5E_TC_FLOW_NIC)
@@ -2955,7 +2961,6 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 
 	err = rhashtable_insert_fast(tc_ht, &flow->node, tc_ht_params);
 	if (err) {
-		/* TODO: if simple flow should goto err_free_counter */
 		mlx5e_tc_del_flow(priv, flow);
 		kfree(flow);
 	}
@@ -2963,9 +2968,6 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 	trace("done: flow: %px", flow);
 	return err;
 
-err_free_counter:
-	/* TODO: dangling counter, call destroy or whatever? */
-	/* free(flow->esw_attr->counter); */
 err_free:
 	kfree(parse_attr->mod_hdr_actions);
 err:
@@ -3084,7 +3086,7 @@ static struct mlx5e_tc_flow *microflow_ct_flow(struct mlx5e_priv *priv,
 	flow->esw_attr->match_level = MLX5_MATCH_L4;
 
 	/* TODO: allocate in allow_flow? */
-	flow->esw_attr->counter = mlx5_fc_alloc();
+	flow->esw_attr->counter = mlx5_fc_alloc(GFP_ATOMIC);
 	if (!flow->esw_attr->counter)
 		goto err_counter;
 
@@ -3266,12 +3268,43 @@ static void microflow_attach(struct mlx5e_tc_microflow *microflow)
 	}
 }
 
+static int microflow_register_ct_flow(struct mlx5e_tc_microflow *microflow)
+{
+	struct mlx5e_tc_flow *flow;
+	int i;
+	int err;
+
+	if (!enable_ct_ageing)
+		return 0;
+
+	for (i = 0; i < microflow->nr_flows; i++) {
+		flow = microflow->path.flows[i];
+		if (!(flow->flags & MLX5E_TC_FLOW_TUPLE))
+			continue;
+
+		/* TODO: nft_gen_flow_offload_add can fail and we need to remove
+		   previous successful adds.
+		*/
+		err = nft_gen_flow_offload_add(flow->net,
+					       flow->zone,
+					       flow->tuple, flow);
+		if (err) {
+			etrace("nft_gen_flow_offload_add() failed: err: %d", err);
+			return err;
+		}
+	}
+
+	return 0;
+}
+
 static int __microflow_merge(struct mlx5e_tc_microflow *microflow)
 {
 	struct mlx5e_priv *priv = microflow->priv;
-	struct mlx5e_rep_priv *rpriv = priv->ppriv;
-	struct mlx5e_tc_flow *mflow, *flow;
 	struct rhashtable *tc_ht = get_tc_ht(priv);
+	struct mlx5e_rep_priv *rpriv = priv->ppriv;
+	struct mlx5e_tc_flow *mflow;
+	struct mlx5e_tc_flow *flow;
+	struct mlx5_fc *counter;
 	unsigned long cookie;
 	int i;
 	int err;
@@ -3281,10 +3314,6 @@ static int __microflow_merge(struct mlx5e_tc_microflow *microflow)
 		goto err_flow;
 
 	mflow->flags = MLX5E_TC_FLOW_SIMPLE;
-
-	mflow->esw_attr->counter = mlx5_fc_alloc();
-	if (!mflow->esw_attr->counter)
-		goto err_counter;
 
 	mflow->esw_attr->in_rep = rpriv->rep;
 	mflow->esw_attr->in_mdev = priv->mdev;
@@ -3303,7 +3332,7 @@ static int __microflow_merge(struct mlx5e_tc_microflow *microflow)
 
 		microflow->path.flows[i] = flow;
 
-		mflow->flags |= flow->flags; /* is that right? both */
+		mflow->flags |= flow->flags;
 
 		microflow_merge_match(mflow, flow);
 		microflow_merge_action(mflow, flow);
@@ -3319,12 +3348,15 @@ static int __microflow_merge(struct mlx5e_tc_microflow *microflow)
 		microflow->dummy_counters[i] = flow->esw_attr->counter;
 	}
 
-	mlx5_fc_link_dummies(mflow->esw_attr->counter, microflow->dummy_counters, microflow->nr_flows);
-
 	/* TODO: Workaround: crashes otherwise, should fix */
 	mflow->esw_attr->action = mflow->esw_attr->action & ~MLX5_FLOW_CONTEXT_ACTION_CT;
 
-	trace("offloading rule");
+	counter = mlx5_fc_alloc(GFP_KERNEL);
+	if (!counter)
+		goto err;
+	mflow->esw_attr->counter = counter;
+
+	mlx5_fc_link_dummies(counter, microflow->dummy_counters, microflow->nr_flows);
 
 	err = configure_fdb(mflow);
 	if (err && err != -EAGAIN)
@@ -3332,18 +3364,11 @@ static int __microflow_merge(struct mlx5e_tc_microflow *microflow)
 
 	microflow_attach(microflow);
 
-	/* TODO: temp */
-	if (enable_ct_ageing)
-	for (i=0; i<microflow->nr_flows; i++) {
-		flow = microflow->path.flows[i];
-		if (!(flow->flags & MLX5E_TC_FLOW_TUPLE))
-			continue;
-
-		/* TODO: shouldn't fail? */
-		err = nft_gen_flow_offload_add(flow->net,
-					       flow->zone,
-					       flow->tuple, flow);
-		trace("CT flow: nft_gen_flow_offload_add() ret: %d", err);
+	err = microflow_register_ct_flow(microflow);
+	if (err) {
+		mlx5e_tc_del_flow(priv, mflow);
+		kfree(mflow);
+		goto err_flow;
 	}
 
 	trace("microflow_merge: mflow: %px, flows: %d", mflow, microflow->nr_flows);
@@ -3351,8 +3376,6 @@ static int __microflow_merge(struct mlx5e_tc_microflow *microflow)
 	return 0;
 
 err:
-	kfree(mflow->esw_attr->counter);
-err_counter:
 	kfree(mflow->esw_attr->parse_attr->mod_hdr_actions);
 	kvfree(mflow->esw_attr->parse_attr);
 	kfree(mflow);
@@ -3452,9 +3475,6 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 
 	flow->cookie = cookie;
 
-	/* TODO: ISSUE! we should remove it from the hash table once freed??? */
-	/* different hashtable? */
-	/* for now, we can remove it once CT flow is deleted */
 	err = rhashtable_insert_fast(tc_ht, &flow->node, tc_ht_params);
 	if (err && err != -EEXIST)
 		goto err_free;
@@ -3466,7 +3486,7 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 	}
 
 out:
-	/* TODO: this 5-tuple (dummy) flow won't get free by anyone, only once the driver unloads,
+	/* NOTE: this 5-tuple (dummy) flow won't get freed by anyone, only once the driver unloads,
 	 * or by the flow_offload module.
 	 */
 	microflow->path.cookies[microflow->nr_flows++] = cookie;
