@@ -70,13 +70,13 @@ static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
 	err = nf_conntrack_in(net, PF_INET,
 			      NF_INET_PRE_ROUTING, skb);
 	if (err != NF_ACCEPT) {
-		printk("[yk] tcf_conntrack: nf_conntrack_in failed: %d\n", err);
+		etrace("tcf_conntrack: nf_conntrack_in failed: %d", err);
 		goto out;
 	}
 
 	ct = nf_ct_get(skb, &ctinfo);
 	if (!ct) {
-		printk("[yk] tcf_conntrack: nf_ct_get failed\n");
+		etrace("tcf_conntrack: nf_ct_get failed");
 		goto out;
 	}
 

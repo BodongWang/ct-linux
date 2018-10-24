@@ -182,7 +182,7 @@ static u8 fl_ct_get_state(enum ip_conntrack_info ctinfo)
 		ct_state |= TCA_FLOWER_KEY_CT_FLAGS_NEW;
 		break;
 	default:
-		printk("[yk] fl_ct_get_state: ctinfo %d not supported\n", ctinfo);
+		etrace("fl_ct_get_state: ctinfo %d not supported", ctinfo);
 		break;
 	}
 
@@ -1112,14 +1112,6 @@ static int fl_change(struct net *net, struct sk_buff *in_skb,
 					     fnew->mask->filter_ht_params);
 		if (err)
 			goto errout_mask;
-	}
-
-	{
-		struct fl_flow_key *key = &mask.key;
-		struct fl_flow_key *mask = &fnew->mkey;
-
-		printk("[yk] fl_change: hardware view ct: key: key->ct_state: %X, mask->ct_state: %X\n",
-			key->ct_state, mask->ct_state);
 	}
 
 	if (!tc_skip_hw(fnew->flags)) {
