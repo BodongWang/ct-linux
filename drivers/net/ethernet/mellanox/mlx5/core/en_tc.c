@@ -3225,6 +3225,7 @@ static void microflow_merge_vxlan(struct mlx5e_tc_flow *mflow,
 }
 
 /* TODO: replace tc_priv with skb->cb or a translation table in the driver */
+/* most probably, there will be at most NCORES of outstanding skb at any given time */
 static struct mlx5e_tc_microflow *get_tc_priv(struct sk_buff *skb)
 {
 	return TC_CB(skb)->tc_priv;
@@ -3316,7 +3317,7 @@ static int __microflow_merge(struct mlx5e_tc_microflow *microflow)
 
 	mlx5_fc_link_dummies(mflow->esw_attr->counter, microflow->dummy_counters, microflow->nr_flows);
 
-	/* TOOD: Workaround: crashes otherwise, should fix */
+	/* TODO: Workaround: crashes otherwise, should fix */
 	mflow->esw_attr->action = mflow->esw_attr->action & ~MLX5_FLOW_CONTEXT_ACTION_CT;
 
 	trace("offloading rule");
@@ -3463,9 +3464,6 @@ out:
 	/* TODO: this 5-tuple (dummy) flow won't get free by anyone, only once the driver unloads,
 	 * or by the flow_offload module.
 	 */
-
-	/* TODO: if "action ct" is part of the last rule (very unlikely), we
-	 * might have a memory leak (microflow) */
 	microflow->path.cookies[microflow->nr_flows++] = cookie;
 	return 0;
 
@@ -3511,7 +3509,7 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 
 	microflow->path.cookies[microflow->nr_flows++] = mf->cookie;
 
-	trace("is_flow_terminating: %d", mf->last_flow);
+	trace("last_flow: %d", mf->last_flow);
 	if (!mf->last_flow)
 		return 0;
 
