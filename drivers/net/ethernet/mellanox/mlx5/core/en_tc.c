@@ -62,6 +62,9 @@
 
 /* TODO: there is a circular dep between mlx5_core and nft_gen_flow_offload ??? */
 
+static int enable_ct_ageing = 1; /* On by default */
+module_param(enable_ct_ageing, int, 0644);
+
 struct mlx5_nic_flow_attr {
 	u32 action;
 	u32 flow_tag;
@@ -3330,6 +3333,7 @@ static int __microflow_merge(struct mlx5e_tc_microflow *microflow)
 	microflow_attach(microflow);
 
 	/* TODO: temp */
+	if (enable_ct_ageing)
 	for (i=0; i<microflow->nr_flows; i++) {
 		flow = microflow->path.flows[i];
 		if (!(flow->flags & MLX5E_TC_FLOW_TUPLE))
