@@ -3007,7 +3007,12 @@ static void microflow_merge_match(struct mlx5e_tc_flow *mflow,
 
 	trace("merging match mflow");
 
-	/* TODO: partial support for masks? */
+	/* TODO: partial support for masks?
+	 *
+	 *	127.0.0.0/254.0.0.0
+	 *	128.5.1.2/254.255.255.255
+	 *
+	 */
 	for (i = 0; i < sizeof(struct mlx5_flow_spec); i++) {
 		if (*dst == 0 && *src != 0)
 			*dst = *src;
