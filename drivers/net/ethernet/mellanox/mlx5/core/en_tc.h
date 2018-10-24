@@ -49,7 +49,8 @@ int mlx5e_tc_nic_init(struct mlx5e_priv *priv);
 void mlx5e_tc_nic_cleanup(struct mlx5e_priv *priv);
 
 int mlx5e_tc_esw_init(struct rhashtable *tc_ht);
-void mlx5e_tc_esw_cleanup(struct rhashtable *tc_ht);
+/* TODO: temp */
+void mlx5e_tc_esw_cleanup(struct mlx5e_priv *priv);
 
 int mlx5e_configure_flower(struct mlx5e_priv *priv,
 			   struct tc_cls_flower_offload *f, int flags);

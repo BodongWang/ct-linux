@@ -1113,6 +1113,7 @@ err_remove_sqs:
 	return err;
 }
 
+/* TODO: this function get called only once or per rep device? */
 static void
 mlx5e_nic_rep_unload(struct mlx5_eswitch_rep *rep)
 {
@@ -1123,7 +1124,7 @@ mlx5e_nic_rep_unload(struct mlx5_eswitch_rep *rep)
 		mlx5e_remove_sqs_fwd_rules(priv);
 
 	/* clean uplink offloaded TC rules, delete shared tc flow table */
-	mlx5e_tc_esw_cleanup(&rpriv->tc_ht);
+	mlx5e_tc_esw_cleanup(priv);
 
 	mlx5e_rep_neigh_cleanup(rpriv);
 }

@@ -106,6 +106,7 @@ struct mlx5e_tc_flow {
 	struct list_head ct;
 	/* TODO: temp */
 	bool in_list;
+	struct work_struct work;
 
 	union {
 		struct mlx5_esw_flow_attr esw_attr[0];
@@ -3656,6 +3657,18 @@ void ct_flow_offload_get_stats(struct nf_gen_flow_ct_stat *ct_stat, struct list_
 	trace("bytes: %llu, packets: %llu, lastuse: %llu", ct_stat->bytes, ct_stat->packets, ct_stat->last_used);
 }
 
+void ct_flow_offload_destroy_work(struct work_struct *work)
+{
+	struct mlx5e_tc_flow *flow = container_of(work, struct mlx5e_tc_flow, work);
+	struct rhashtable *tc_ht = get_tc_ht(flow->priv);
+
+	rtnl_lock();
+	rhashtable_remove_fast(tc_ht, &flow->node, tc_ht_params);
+	mlx5e_tc_del_fdb_flow(flow->priv, flow);
+	kfree(flow);
+	rtnl_unlock();
+}
+
 /* notify user that this connection is dying */
 int ct_flow_offload_destroy(struct list_head *head)
 {
@@ -3663,28 +3676,13 @@ int ct_flow_offload_destroy(struct list_head *head)
 
 	trace("ct_flow_offload_destroy");
 
-	/* TODO: it just does not seem good */
-	rtnl_lock();
 	list_for_each_entry_safe(flow, n, head, ct) {
-		struct rhashtable *tc_ht = get_tc_ht(flow->priv);
-
-		/* TODO: could be a race here between cleanup that destroy tc_ht table */
-		/* should we hold a different hashtable for the CT */
-
-		/* can we use cookie and lookup to prevent the race?
-		 * 2nd: if rtnl_lock is held, and we must, and if the caller
-		 * is from a workqueue, we can have an issue if the driver
-		 * cleanup is under rtnl_lock
-		*/
-
-		rhashtable_remove_fast(tc_ht, &flow->node, tc_ht_params);
-		mlx5e_tc_del_fdb_flow(flow->priv, flow);
-
 		list_del(&flow->ct);
 
-		kfree(flow);
+		INIT_WORK(&flow->work, ct_flow_offload_destroy_work);
+		/* TODO: might fail? */
+		queue_work(flow->priv->wq, &flow->work);
 	}
-	rtnl_unlock();
 
 	return 0;
 }
@@ -3725,9 +3723,12 @@ err_tc_ht:
 	return err;
 }
 
-void mlx5e_tc_esw_cleanup(struct rhashtable *tc_ht)
+void mlx5e_tc_esw_cleanup(struct mlx5e_priv *priv)
 {
+	struct rhashtable *tc_ht = get_tc_ht(priv);
+
 	nft_gen_flow_offload_dep_ops_unregister(&ct_offload_ops);
+	flush_workqueue(priv->wq);
 
 	rhashtable_free_and_destroy(tc_ht, _mlx5e_tc_del_flow, NULL);
 	rhashtable_free_and_destroy(&mf_ht, NULL, NULL);
