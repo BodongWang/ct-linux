@@ -2960,7 +2960,8 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 	return err;
 
 err_free_counter:
-	kfree(flow->esw_attr->counter);
+	/* TODO: dangling counter, call destroy or whatever? */
+	/* free(flow->esw_attr->counter); */
 err_free:
 	kfree(parse_attr->mod_hdr_actions);
 err:
