@@ -118,17 +118,17 @@ struct mlx5e_tc_flow {
 	/* Don't add any fields here */
 };
 
-struct mlx5e_tc_microflow;
+struct mlx5e_microflow;
 
 struct mlx5e_microflow_node {
 	struct list_head node;
-	struct mlx5e_tc_microflow *microflow;
+	struct mlx5e_microflow *microflow;
 };
 
 #define MICROFLOW_MAX_FLOWS 8
 
 /* TODO: change the name, remove "tc" */
-struct mlx5e_tc_microflow {
+struct mlx5e_microflow {
 	struct rhash_head node;
 	struct work_struct work;
 	struct mlx5e_priv *priv;
@@ -162,9 +162,9 @@ enum {
 struct rhashtable mf_ht;
 
 static const struct rhashtable_params mf_ht_params = {
-	.head_offset = offsetof(struct mlx5e_tc_microflow, node),
-	.key_offset = offsetof(struct mlx5e_tc_microflow, path.cookies),
-	.key_len = sizeof(((struct mlx5e_tc_microflow *)0)->path.cookies),
+	.head_offset = offsetof(struct mlx5e_microflow, node),
+	.key_offset = offsetof(struct mlx5e_microflow, path.cookies),
+	.key_len = sizeof(((struct mlx5e_microflow *)0)->path.cookies),
 	.automatic_shrinking = true,
 };
 
@@ -968,9 +968,9 @@ err_attach_encap:
 static void mlx5e_tc_del_fdb_flow(struct mlx5e_priv *priv,
 				  struct mlx5e_tc_flow *flow);
 
-static void microflow_free(struct mlx5e_tc_microflow *microflow);
+static void microflow_free(struct mlx5e_microflow *microflow);
 
-static void mlx5e_tc_del_microflow(struct mlx5e_tc_microflow *microflow)
+static void mlx5e_tc_del_microflow(struct mlx5e_microflow *microflow)
 {
 	int i;
 
@@ -3232,29 +3232,29 @@ static void microflow_merge_vxlan(struct mlx5e_tc_flow *mflow,
 
 /* TODO: replace tc_priv with skb->cb or a translation table in the driver */
 /* most probably, there will be at most NCORES of outstanding skb at any given time */
-static struct mlx5e_tc_microflow *get_tc_priv(struct sk_buff *skb)
+static struct mlx5e_microflow *get_tc_priv(struct sk_buff *skb)
 {
 	return TC_CB(skb)->tc_priv;
 }
 
-static void set_tc_priv(struct sk_buff *skb, struct mlx5e_tc_microflow *microflow)
+static void set_tc_priv(struct sk_buff *skb, struct mlx5e_microflow *microflow)
 {
 	TC_CB(skb)->tc_priv = microflow;
 }
 
 static struct kmem_cache *microflow_cache; // __ro_after_init; crashes??
 
-static struct mlx5e_tc_microflow *microflow_alloc(void)
+static struct mlx5e_microflow *microflow_alloc(void)
 {
 	return kmem_cache_alloc(microflow_cache, GFP_ATOMIC);
 }
 
-static void microflow_free(struct mlx5e_tc_microflow *microflow)
+static void microflow_free(struct mlx5e_microflow *microflow)
 {
 	kmem_cache_free(microflow_cache, microflow);
 }
 
-static void microflow_attach(struct mlx5e_tc_microflow *microflow)
+static void microflow_attach(struct mlx5e_microflow *microflow)
 {
 	struct mlx5e_tc_flow *flow;
 	int i;
@@ -3268,7 +3268,7 @@ static void microflow_attach(struct mlx5e_tc_microflow *microflow)
 	}
 }
 
-static int microflow_register_ct_flow(struct mlx5e_tc_microflow *microflow)
+static int microflow_register_ct_flow(struct mlx5e_microflow *microflow)
 {
 	struct mlx5e_tc_flow *flow;
 	int i;
@@ -3297,7 +3297,7 @@ static int microflow_register_ct_flow(struct mlx5e_tc_microflow *microflow)
 	return 0;
 }
 
-static int __microflow_merge(struct mlx5e_tc_microflow *microflow)
+static int __microflow_merge(struct mlx5e_microflow *microflow)
 {
 	struct mlx5e_priv *priv = microflow->priv;
 	struct rhashtable *tc_ht = get_tc_ht(priv);
@@ -3387,14 +3387,14 @@ err_flow:
 
 void microflow_merge(struct work_struct *work)
 {
-	struct mlx5e_tc_microflow *microflow = container_of(work, struct mlx5e_tc_microflow, work);
+	struct mlx5e_microflow *microflow = container_of(work, struct mlx5e_microflow, work);
 
 	rtnl_lock();
 	__microflow_merge(microflow);
 	rtnl_unlock();
 }
 
-static int microflow_merge_work(struct mlx5e_tc_microflow *microflow)
+static int microflow_merge_work(struct mlx5e_microflow *microflow)
 {
 	INIT_WORK(&microflow->work, microflow_merge);
 	if (queue_work(microflow->priv->wq, &microflow->work))
@@ -3404,14 +3404,14 @@ static int microflow_merge_work(struct mlx5e_tc_microflow *microflow)
 }
 
 /* TODO: use hash-table to store skb to microflow mapping ? */
-static struct mlx5e_tc_microflow *microflow_get(struct sk_buff *skb,
+static struct mlx5e_microflow *microflow_get(struct sk_buff *skb,
 						struct mlx5e_priv *priv)
 {
-	struct mlx5e_tc_microflow *microflow;
+	struct mlx5e_microflow *microflow;
 
 	/* TODO: fix the -1 */
 	microflow = get_tc_priv(skb);
-	if (microflow == (struct mlx5e_tc_microflow *) -1)
+	if (microflow == (struct mlx5e_microflow *) -1)
 		return NULL;
 
 	if (microflow)
@@ -3419,7 +3419,7 @@ static struct mlx5e_tc_microflow *microflow_get(struct sk_buff *skb,
 
 	microflow = microflow_alloc();
 	if (!microflow) {
-		set_tc_priv(skb, (struct mlx5e_tc_microflow *) -1);
+		set_tc_priv(skb, (struct mlx5e_microflow *) -1);
 		return NULL;
 	}
 
@@ -3431,17 +3431,17 @@ static struct mlx5e_tc_microflow *microflow_get(struct sk_buff *skb,
 	return microflow;
 }
 
-static void microflow_put(struct sk_buff *skb, struct mlx5e_tc_microflow *microflow)
+static void microflow_put(struct sk_buff *skb, struct mlx5e_microflow *microflow)
 {
 	if (microflow)
 		microflow_free(microflow);
-	set_tc_priv(skb, (struct mlx5e_tc_microflow *) -1);
+	set_tc_priv(skb, (struct mlx5e_microflow *) -1);
 }
 
 int mlx5e_configure_ct(struct mlx5e_priv *priv,
 		       struct tc_ct_offload *cto)
 {
-	struct mlx5e_tc_microflow *microflow;
+	struct mlx5e_microflow *microflow;
 	struct sk_buff *skb = cto->skb;
 	struct mlx5e_tc_flow *flow;
 	int err;
@@ -3454,7 +3454,7 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 	if (!microflow)
 		goto err;
 
-	if (microflow == (struct mlx5e_tc_microflow *) -1)
+	if (microflow == (struct mlx5e_microflow *) -1)
 		return -1;
 
 	if (microflow->nr_flows == MICROFLOW_MAX_FLOWS)
@@ -3507,7 +3507,7 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	struct rhashtable *tc_ht = get_tc_ht(priv);
 	struct sk_buff *skb = mf->skb;
 	struct mlx5e_tc_flow *flow;
-	struct mlx5e_tc_microflow *microflow = NULL;
+	struct mlx5e_microflow *microflow = NULL;
 	int err;
 
 	trace("mlx5e_configure_microflow: mf->last: %d, get_tc_priv(skb): %px", mf->last_flow, get_tc_priv(skb));
@@ -3518,7 +3518,7 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 
 	/* TODO: get_tc_priv must return zero on first call, or use a translation table */
 	microflow = get_tc_priv(skb);
-	if (microflow == (struct mlx5e_tc_microflow *) -1)
+	if (microflow == (struct mlx5e_microflow *) -1)
 		return -1;
 
 	/* No match */
@@ -3726,7 +3726,7 @@ int mlx5e_tc_esw_init(struct rhashtable *tc_ht)
 	int err;
 
 	microflow_cache = kmem_cache_create("microflow_cache",
-					    sizeof(struct mlx5e_tc_microflow),
+					    sizeof(struct mlx5e_microflow),
 					    0, SLAB_HWCACHE_ALIGN,
 					    NULL);
 	if (!microflow_cache)
