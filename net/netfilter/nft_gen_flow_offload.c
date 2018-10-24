@@ -37,20 +37,28 @@
 #endif
 
 
-struct nf_gen_flow_offload_table;
 
 static struct nf_gen_flow_offload_table __rcu *_flowtable;
 
+static atomic_t offloaded_flow_cnt;
 
 static unsigned int offloaded_ct_timeout = 30*HZ;
 
 module_param(offloaded_ct_timeout, uint, 0644);
 
-static atomic_t offloaded_flow_cnt;
 
 #define PORTING_FLOW_TABLE
 
 #ifdef PORTING_FLOW_TABLE
+
+struct flow_table_stat {
+    struct spinlock lock;
+    u32 added;
+    u32 add_failed;
+    u32 add_racing;
+    u32 aged;
+};
+
 
 
 
@@ -58,6 +66,7 @@ struct nf_gen_flow_offload_table {
     struct list_head         list;
     struct rhashtable        rhashtable;
     struct delayed_work      gc_work;
+    struct flow_table_stat   stats; 
 };
 
 enum nf_gen_flow_offload_tuple_dir {
@@ -97,6 +106,56 @@ struct nf_gen_flow_offload_entry {
     struct nf_gen_flow_ct_stat stats;
 };
 
+static inline void tstat_added_inc(struct nf_gen_flow_offload_table *tbl)
+{
+    spin_lock(&tbl->stats.lock);
+	tbl->stats.added++;
+    spin_unlock(&tbl->stats.lock);
+}
+
+static inline u32 tstat_added_get(struct nf_gen_flow_offload_table *tbl)
+{
+	return tbl->stats.added;
+}
+
+static inline void tstat_add_failed_inc(struct nf_gen_flow_offload_table *tbl)
+{
+    spin_lock(&tbl->stats.lock);
+	tbl->stats.add_failed++;
+    spin_unlock(&tbl->stats.lock);
+}
+
+static inline u32 tstat_add_failed_get(struct nf_gen_flow_offload_table *tbl)
+{
+	return tbl->stats.add_failed;
+}
+
+static inline void tstat_add_racing_inc(struct nf_gen_flow_offload_table *tbl)
+{
+    spin_lock(&tbl->stats.lock);
+	tbl->stats.add_racing++;
+    spin_unlock(&tbl->stats.lock);
+}
+
+static inline u32 tstat_add_racing_get(struct nf_gen_flow_offload_table *tbl)
+{
+	return tbl->stats.add_racing;
+}
+
+static inline void tstat_aged_inc(struct nf_gen_flow_offload_table *tbl)
+{
+    spin_lock(&tbl->stats.lock);
+	tbl->stats.aged++;
+    spin_unlock(&tbl->stats.lock);
+}
+
+static inline u32 tstat_aged_get(struct nf_gen_flow_offload_table *tbl)
+{
+	return tbl->stats.aged;
+}
+
+
+
 static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow);
 static int nft_gen_flow_offload_destroy_dep(struct nf_gen_flow_offload *flow);
 
@@ -122,7 +181,7 @@ nf_gen_flow_offload_alloc(struct nf_conn *ct, int zone_id, int private_data_len)
 
     if (unlikely(nf_ct_is_dying(ct) ||
         !atomic_inc_not_zero(&ct->ct_general.use)))
-        return NULL;
+        return ERR_PTR(-EINVAL);
 
     entry = kzalloc((sizeof(*entry) + private_data_len), GFP_ATOMIC);
     if (!entry)
@@ -143,7 +202,7 @@ nf_gen_flow_offload_alloc(struct nf_conn *ct, int zone_id, int private_data_len)
 err_ct_refcnt:
     nf_ct_put(ct);
 
-    return NULL;
+    return ERR_PTR(-ENOMEM);
 }
 
 
@@ -250,13 +309,18 @@ static const struct rhashtable_params nf_gen_flow_offload_rhash_params = {
 static int nf_gen_flow_offload_add(struct nf_gen_flow_offload_table *flow_table,
                                                 struct nf_gen_flow_offload *flow)
 {
-    rhashtable_insert_fast(&flow_table->rhashtable,
+    int ret;
+    ret = rhashtable_insert_fast(&flow_table->rhashtable,
                    &flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].node,
                    nf_gen_flow_offload_rhash_params);
-    rhashtable_insert_fast(&flow_table->rhashtable,
-                   &flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].node,
-                   nf_gen_flow_offload_rhash_params);
-    return 0;
+    if (ret)
+        return ret;
+        
+    ret = rhashtable_insert_fast(&flow_table->rhashtable,
+               &flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].node,
+               nf_gen_flow_offload_rhash_params);
+
+    return ret;
 }
 
 static void nf_gen_flow_offload_del(struct nf_gen_flow_offload_table *flow_table,
@@ -398,6 +462,7 @@ static int nf_gen_flow_offload_gc_step(struct nf_gen_flow_offload_table *flow_ta
             nft_gen_flow_offload_stats(flow);
 
             if (nf_gen_flow_offload_has_expired(flow)) {
+                tstat_aged_inc(flow_table);
                 flow->flags |= FLOW_OFFLOAD_TEARDOWN;
             }
         }
@@ -432,6 +497,8 @@ int nf_gen_flow_offload_table_init(struct nf_gen_flow_offload_table *flowtable)
                   &nf_gen_flow_offload_rhash_params);
     if (err < 0)
         return err;
+
+    spin_lock_init(&flowtable->stats.lock);
 
     queue_delayed_work(system_power_efficient_wq,
                &flowtable->gc_work, HZ);
@@ -489,9 +556,11 @@ static int _flowtable_add_entry(const struct net *net, int zone_id,
     int ret;
 
     flow = nf_gen_flow_offload_alloc(ct, zone_id, 0);
-    if (!flow)
+    if (IS_ERR(flow)) {
+        ret = PTR_ERR(flow);
         goto err_flow_alloc;
-
+    }
+    
     rcu_read_lock();
     flowtable = rcu_dereference(_flowtable);
     if (flowtable) {
@@ -511,13 +580,11 @@ static int _flowtable_add_entry(const struct net *net, int zone_id,
 
 err_flow_add:
     rcu_read_unlock();
-    pr_debug("%s: err_flow_add", __FUNCTION__);
     nf_gen_flow_offload_free(flow);
 err_flow_alloc:
-    pr_debug("%s: err_flow_alloc", __FUNCTION__);
     clear_bit(IPS_OFFLOAD_BIT, &ct->status);
 
-    return -EINVAL;
+    return ret;
 }
 
 static int _check_ct_status(struct nf_conn *ct)
@@ -676,8 +743,7 @@ int nft_gen_flow_offload_add(const struct net *net,
     struct nf_conn *ct;
     int ret = 0;
     struct flow_offload_dep_ops * ops;
-
-    NFT_GEN_FLOW_FUNC_ENTRY();
+    struct nf_gen_flow_offload_table *flowtable;
 
     if (rcu_access_pointer(flow_dep_ops) == NULL)
         return -EPERM;
@@ -694,9 +760,11 @@ int nft_gen_flow_offload_add(const struct net *net,
         entry = container_of(fhash, struct nf_gen_flow_offload_entry, flow.tuplehash[dir]);
     } else {
         thash = nf_conntrack_find_get((struct net *)net, zone, tuple);
-        if (!thash)
-            return -EINVAL;
-
+        if (!thash) {
+            ret = -EINVAL;
+            goto _flow_add_exit;
+        }
+        
         ct = nf_ct_tuplehash_to_ctrack(thash);
 
         ret = _check_ct_status(ct);
@@ -708,7 +776,7 @@ int nft_gen_flow_offload_add(const struct net *net,
         }
 
         nf_ct_put(ct);
-        if (ret < 0) return ret;
+        if (ret < 0) goto _flow_add_exit;
 
         entry = container_of(flow, struct nf_gen_flow_offload_entry, flow);
     }
@@ -724,7 +792,8 @@ int nft_gen_flow_offload_add(const struct net *net,
                                     FLOW_OFFLOAD_DYING)) {
             spin_unlock(&entry->dep_lock);
             rcu_read_unlock();
-            return -EINVAL;
+            ret = -EAGAIN;
+            goto _flow_add_exit;
         }
 
         ret = ops->add(dep, &entry->deps);
@@ -733,7 +802,7 @@ int nft_gen_flow_offload_add(const struct net *net,
 
             spin_unlock(&entry->dep_lock);
             rcu_read_unlock();
-            return ret;
+            goto _flow_add_exit;
         }
 
         spin_unlock(&entry->dep_lock);
@@ -745,13 +814,22 @@ int nft_gen_flow_offload_add(const struct net *net,
             nf_gen_flow_offload_set_aging(&entry->flow);
         }
     } else {
-        /* mark as teardown anyway */
         entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;
     }
-
+    
     rcu_read_unlock();
-
-    NFT_GEN_FLOW_FUNC_EXIT();
+    
+_flow_add_exit:  
+    rcu_read_lock();
+    flowtable = rcu_dereference(_flowtable);
+    if (flowtable) {
+        tstat_added_inc(flowtable);
+        if (ret < 0)
+            tstat_add_failed_inc(flowtable);
+        if (ret == -EAGAIN)
+            tstat_add_racing_inc(flowtable);
+    }
+    rcu_read_unlock();
 
     return ret;
 }
@@ -951,11 +1029,26 @@ void __exit nft_gen_flow_offload_proc_exit(void)
 static int nf_conntrack_offloaded_proc_show(struct seq_file *m, void *v)
 {
     int flow_cnt;
-
+    struct nf_gen_flow_offload_table * flowtable;
+    
     flow_cnt = atomic_read(&offloaded_flow_cnt);
 
     seq_printf(m, "total %d flows offloaded \n",
                     flow_cnt);
+
+    rcu_read_lock();
+    flowtable = rcu_dereference(_flowtable);
+    if (flowtable) {
+        seq_printf(m, "tstats add: success %d failed %d racing %d\n",
+                        tstat_added_get(flowtable),
+                        tstat_add_failed_get(flowtable),
+                        tstat_add_racing_get(flowtable));
+
+        seq_printf(m, "tstats gc: aged %d \n",
+                        tstat_aged_get(flowtable));
+    }
+    rcu_read_unlock();
+
     return 0;
 }
 
