@@ -719,6 +719,8 @@ void nft_gen_flow_offload_dep_ops_unregister(struct flow_offload_dep_ops * ops)
 
     rcu_assign_pointer(flow_dep_ops, NULL);
 
+    synchronize_rcu();
+
     rcu_read_lock();
     flowtable = rcu_dereference(_flowtable);
 
