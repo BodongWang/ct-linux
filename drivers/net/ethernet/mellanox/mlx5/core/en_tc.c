@@ -3672,10 +3672,10 @@ int ct_flow_offload_destroy(struct list_head *head)
 
 		rhashtable_remove_fast(tc_ht, &flow->node, tc_ht_params);
 		mlx5e_tc_del_fdb_flow(flow->priv, flow);
-		kfree(flow);
 
 		list_del(&flow->ct);
-		flow->in_list = false;
+
+		kfree(flow);
 	}
 	rtnl_unlock();
 
