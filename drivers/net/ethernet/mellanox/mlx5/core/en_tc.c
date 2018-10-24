@@ -3517,19 +3517,27 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	*/
 
 	/* TODO: get_tc_priv must return zero on first call, or use a translation table */
-	/* TODO: try to avoid allocation if not needed */
-	microflow = microflow_get(skb, priv);
-	if (!microflow)
+	microflow = get_tc_priv(skb);
+	if (microflow == (struct mlx5e_tc_microflow *) -1)
 		return -1;
 
+	/* No match */
 	if (!mf->cookie)
 		goto err;
 
-	if (microflow->nr_flows == MICROFLOW_MAX_FLOWS)
+	/* "Simple" rules should be handled by the normal routines */
+	if (!microflow && mf->last_flow)
 		goto err;
 
 	flow = rhashtable_lookup_fast(tc_ht, &mf->cookie, tc_ht_params);
 	if (!flow)
+		goto err;
+
+	microflow = microflow_get(skb, priv);
+	if (!microflow)
+		goto err;
+
+	if (microflow->nr_flows == MICROFLOW_MAX_FLOWS)
 		goto err;
 
 	microflow->path.cookies[microflow->nr_flows++] = mf->cookie;
@@ -3537,10 +3545,6 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	trace("last_flow: %d", mf->last_flow);
 	if (!mf->last_flow)
 		return 0;
-
-	/* "Simple" rules should be handled by the normal routines */
-	if (microflow->nr_flows == 1)
-		goto err;
 
 	err = rhashtable_lookup_insert_fast(&mf_ht, &microflow->node, mf_ht_params);
 	if (err) {
