@@ -102,7 +102,6 @@ struct nf_gen_flow_offload_entry {
     struct rcu_head         rcu_head;
     struct spinlock         dep_lock; // FIXME, narrow down spin_lock, don't call user callback with locked.
     struct list_head        deps;
-    struct work_struct      work;
     struct nf_gen_flow_ct_stat stats;
 };
 
@@ -657,14 +656,14 @@ static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow)
 }
 
 /* connection is aged out, notify all dependencies  */
-static void _flow_offload_destroy_dep_async(struct work_struct *work)
+static int nft_gen_flow_offload_destroy_dep(struct nf_gen_flow_offload *flow)
 {
     struct nf_gen_flow_offload_entry *e;
     struct flow_offload_dep_ops * ops;
 
-    e = container_of(work, struct nf_gen_flow_offload_entry, work);
+    e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
 
-    pr_debug("async destroy for ct %p", &e->flow);
+    pr_debug("sync destroy for ct %p", &e->flow);
 
     rcu_read_lock();
     ops = rcu_dereference(flow_dep_ops);
@@ -676,28 +675,6 @@ static void _flow_offload_destroy_dep_async(struct work_struct *work)
     rcu_read_unlock();
 
     nf_gen_flow_offload_free(&e->flow);
-}
-
-static int nft_gen_flow_offload_destroy_dep(struct nf_gen_flow_offload *flow)
-{
-    struct nf_gen_flow_offload_entry *e;
-    bool async_needed = false;
-
-    e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
-
-    if (rcu_access_pointer(flow_dep_ops)) {
-        spin_lock(&e->dep_lock);
-        if (!list_empty_careful(&e->deps)) {
-            async_needed = true;
-        }
-        spin_unlock(&e->dep_lock);
-    }
-
-    if (async_needed) {
-        INIT_WORK(&e->work, _flow_offload_destroy_dep_async);
-        schedule_work(&e->work);
-    } else
-        nf_gen_flow_offload_free(&e->flow);
 
     return 0;
 }
