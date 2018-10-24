@@ -3413,8 +3413,11 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 	trace("mlx5e_configure_ct: get_tc_priv(skb): %px", get_tc_priv(skb));
 
 	microflow = get_tc_priv(skb);
-	if (!microflow || (microflow == (struct mlx5e_tc_microflow *) -1))
+	if (!microflow)
 		goto err;
+
+	if (microflow == (struct mlx5e_tc_microflow *) -1)
+		return -1;
 
 	if (microflow->nr_flows == MICROFLOW_MAX_FLOWS)
 		goto err;
