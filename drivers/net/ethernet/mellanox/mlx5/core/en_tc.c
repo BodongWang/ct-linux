@@ -3060,8 +3060,6 @@ static int microflow_merge_mirred(struct mlx5e_tc_flow *mflow,
 	dst_attr->out_count = out_count;
 	dst_attr->mirror_count += src_attr->mirror_count;
 
-	atrace(dst_attr->mirror_count < out_count);
-
 	return 0;
 }
 
