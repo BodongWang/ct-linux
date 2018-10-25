@@ -108,49 +108,49 @@ struct nf_gen_flow_offload_entry {
 static inline void tstat_added_inc(struct nf_gen_flow_offload_table *tbl)
 {
     spin_lock(&tbl->stats.lock);
-	tbl->stats.added++;
+    tbl->stats.added++;
     spin_unlock(&tbl->stats.lock);
 }
 
 static inline u32 tstat_added_get(struct nf_gen_flow_offload_table *tbl)
 {
-	return tbl->stats.added;
+    return tbl->stats.added;
 }
 
 static inline void tstat_add_failed_inc(struct nf_gen_flow_offload_table *tbl)
 {
     spin_lock(&tbl->stats.lock);
-	tbl->stats.add_failed++;
+    tbl->stats.add_failed++;
     spin_unlock(&tbl->stats.lock);
 }
 
 static inline u32 tstat_add_failed_get(struct nf_gen_flow_offload_table *tbl)
 {
-	return tbl->stats.add_failed;
+    return tbl->stats.add_failed;
 }
 
 static inline void tstat_add_racing_inc(struct nf_gen_flow_offload_table *tbl)
 {
     spin_lock(&tbl->stats.lock);
-	tbl->stats.add_racing++;
+    tbl->stats.add_racing++;
     spin_unlock(&tbl->stats.lock);
 }
 
 static inline u32 tstat_add_racing_get(struct nf_gen_flow_offload_table *tbl)
 {
-	return tbl->stats.add_racing;
+    return tbl->stats.add_racing;
 }
 
 static inline void tstat_aged_inc(struct nf_gen_flow_offload_table *tbl)
 {
     spin_lock(&tbl->stats.lock);
-	tbl->stats.aged++;
+    tbl->stats.aged++;
     spin_unlock(&tbl->stats.lock);
 }
 
 static inline u32 tstat_aged_get(struct nf_gen_flow_offload_table *tbl)
 {
-	return tbl->stats.aged;
+    return tbl->stats.aged;
 }
 
 
@@ -253,6 +253,7 @@ void nf_gen_flow_offload_free(struct nf_gen_flow_offload *flow)
     e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
     if (flow->flags & FLOW_OFFLOAD_DYING)
         nf_ct_delete(e->ct, 0, 0);
+    /* pair to ct_get in flow_offload_alloc */
     nf_ct_put(e->ct);
     kfree_rcu(e, rcu_head);
 }
@@ -758,6 +759,9 @@ int nft_gen_flow_offload_add(const struct net *net,
         if (ret < 0) goto _flow_add_exit;
 
         entry = container_of(flow, struct nf_gen_flow_offload_entry, flow);
+
+        /* force clear this flag for new entry */
+        entry->flow.flags = 0; 
     }
 
 
@@ -988,24 +992,7 @@ static struct flow_offload_dep_ops dummy_ops = {
 #endif
 
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0)
-
-/* proc_create_single_data can't work in 3.10,
-   need full seq operations to support single data show,
-   implement it soon */
-int __init nft_gen_flow_offload_proc_init(void)
-{
-    return 0;
-}
-
-void __exit nft_gen_flow_offload_proc_exit(void)
-{
-    return;
-}
-
-#else
-
-static int nf_conntrack_offloaded_proc_show(struct seq_file *m, void *v)
+static int _flow_proc_show(struct seq_file *m, void *v)
 {
     int flow_cnt;
     struct nf_gen_flow_offload_table * flowtable;
@@ -1018,6 +1005,10 @@ static int nf_conntrack_offloaded_proc_show(struct seq_file *m, void *v)
     rcu_read_lock();
     flowtable = rcu_dereference(_flowtable);
     if (flowtable) {
+        seq_printf(m, "tstats hashtable: elements %d \n",
+                        atomic_read((const atomic_t *)\
+                        &flowtable->rhashtable.nelems));
+    
         seq_printf(m, "tstats add: success %d failed %d racing %d\n",
                         tstat_added_get(flowtable),
                         tstat_add_failed_get(flowtable),
@@ -1031,13 +1022,27 @@ static int nf_conntrack_offloaded_proc_show(struct seq_file *m, void *v)
     return 0;
 }
 
+
+static int _flow_proc_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, _flow_proc_show, PDE_DATA(inode));
+}
+
+static const struct file_operations _flow_proc_fops = {
+    .open	= _flow_proc_open,
+    .read	= seq_read,
+    .llseek	= seq_lseek,
+    .release	= single_release,
+};
+
 int __init nft_gen_flow_offload_proc_init(void)
 {
     struct proc_dir_entry *p;
     int rc = -ENOMEM;
 
-    p = proc_create_single_data("nf_conntrack_offloaded", 0444, init_net.proc_net,
-                                nf_conntrack_offloaded_proc_show, NULL);
+    p = proc_create_data("nf_conntrack_offloaded", 0444, 
+                                init_net.proc_net,
+                                &_flow_proc_fops, NULL);
     if (!p) {
         pr_debug("can't make nf_conntrack_offloaded proc_entry");
         return rc;
@@ -1050,8 +1055,6 @@ void __exit nft_gen_flow_offload_proc_exit(void)
 {
     remove_proc_entry("nf_conntrack_offloaded", init_net.proc_net);
 }
-
-#endif
 
 static int __init nft_gen_flow_offload_module_init(void)
 {
