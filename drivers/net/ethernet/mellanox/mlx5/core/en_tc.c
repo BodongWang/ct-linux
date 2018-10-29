@@ -127,12 +127,13 @@ struct mlx5e_microflow_node {
 
 #define MICROFLOW_MAX_FLOWS 8
 
-/* TODO: change the name, remove "tc" */
 struct mlx5e_microflow {
 	struct rhash_head node;
 	struct work_struct work;
 	struct mlx5e_priv *priv;
 	struct mlx5e_tc_flow *flow;
+
+	u64 cookie;
 
 	int nr_flows;
 	struct {
@@ -3228,28 +3229,47 @@ static void microflow_merge_vxlan(struct mlx5e_tc_flow *mflow,
 	mflow->esw_attr->parse_attr->tun_info = flow->esw_attr->parse_attr->tun_info;
 }
 
-/* TODO: replace tc_priv with skb->cb or a translation table in the driver */
-/* most probably, there will be at most NCORES of outstanding skb at any given time */
-static struct mlx5e_microflow *get_tc_priv(struct sk_buff *skb)
-{
-	return TC_CB(skb)->tc_priv;
-}
-
-static void set_tc_priv(struct sk_buff *skb, struct mlx5e_microflow *microflow)
-{
-	TC_CB(skb)->tc_priv = microflow;
-}
+DEFINE_PER_CPU(struct mlx5e_microflow *, current_microflow) = NULL;
 
 static struct kmem_cache *microflow_cache; // __ro_after_init; crashes??
 
 static struct mlx5e_microflow *microflow_alloc(void)
 {
-	return kmem_cache_alloc(microflow_cache, GFP_ATOMIC);
+	struct mlx5e_microflow *microflow;
+	microflow = kmem_cache_alloc(microflow_cache, GFP_ATOMIC);
+	if (!microflow)
+		return NULL;
+
+	microflow->cookie = 0;
+	return microflow;
 }
 
 static void microflow_free(struct mlx5e_microflow *microflow)
 {
-	kmem_cache_free(microflow_cache, microflow);
+	if (microflow)
+		kmem_cache_free(microflow_cache, microflow);
+}
+
+static struct mlx5e_microflow *microflow_read(void)
+{
+	/* TODO: use __this_cpu_read instead? */
+	return this_cpu_read(current_microflow);
+}
+
+static void microflow_write(struct mlx5e_microflow *microflow)
+{
+	this_cpu_write(current_microflow, microflow);
+}
+
+static void microflow_init(struct mlx5e_microflow *microflow,
+			   struct mlx5e_priv *priv,
+			   struct sk_buff *skb)
+{
+	microflow->cookie = (u64) skb;
+	microflow->priv = priv;
+	microflow->nr_flows = 0;
+	/* TODO: can we remove this and set the key size to be related to nr_flows? */
+	memset(microflow->path.cookies, 0, sizeof(microflow->path.cookies));
 }
 
 static void microflow_attach(struct mlx5e_microflow *microflow)
@@ -3401,41 +3421,6 @@ static int microflow_merge_work(struct mlx5e_microflow *microflow)
 	return -1;
 }
 
-/* TODO: use hash-table to store skb to microflow mapping ? */
-static struct mlx5e_microflow *microflow_get(struct sk_buff *skb,
-						struct mlx5e_priv *priv)
-{
-	struct mlx5e_microflow *microflow;
-
-	/* TODO: fix the -1 */
-	microflow = get_tc_priv(skb);
-	if (microflow == (struct mlx5e_microflow *) -1)
-		return NULL;
-
-	if (microflow)
-		return microflow;
-
-	microflow = microflow_alloc();
-	if (!microflow) {
-		set_tc_priv(skb, (struct mlx5e_microflow *) -1);
-		return NULL;
-	}
-
-	memset(microflow->path.cookies, 0, sizeof(microflow->path.cookies));
-	microflow->nr_flows = 0;
-	microflow->priv = priv;
-	set_tc_priv(skb, microflow);
-
-	return microflow;
-}
-
-static void microflow_put(struct sk_buff *skb, struct mlx5e_microflow *microflow)
-{
-	if (microflow)
-		microflow_free(microflow);
-	set_tc_priv(skb, (struct mlx5e_microflow *) -1);
-}
-
 int mlx5e_configure_ct(struct mlx5e_priv *priv,
 		       struct tc_ct_offload *cto)
 {
@@ -3446,16 +3431,19 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 	struct rhashtable *tc_ht = get_tc_ht(priv);
 	struct nf_conntrack_tuple *tuple = cto->tuple;
 	unsigned long cookie = (unsigned long) tuple;
-	trace("mlx5e_configure_ct: get_tc_priv(skb): %px", get_tc_priv(skb));
+	trace("mlx5e_configure_ct: microflow_read(): %px", microflow_read());
 
-	microflow = get_tc_priv(skb);
+	microflow = microflow_read();
 	if (!microflow)
-		goto err;
-
-	if (microflow == (struct mlx5e_microflow *) -1)
 		return -1;
 
-	if (microflow->nr_flows == MICROFLOW_MAX_FLOWS)
+	if (microflow->nr_flows == -1)
+		goto err;
+
+	if (unlikely(microflow->cookie != (u64) skb))
+		goto err;
+
+	if (unlikely(microflow->nr_flows == MICROFLOW_MAX_FLOWS))
 		goto err;
 
 	flow = rhashtable_lookup_fast(tc_ht, &cookie, tc_ht_params);
@@ -3495,7 +3483,7 @@ err_free:
 	kvfree(flow->esw_attr->parse_attr);
 	kfree(flow);
 err:
-	microflow_put(skb, microflow);
+	microflow->nr_flows = -1;
 	return -1;
 }
 
@@ -3508,34 +3496,35 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	struct mlx5e_microflow *microflow = NULL;
 	int err;
 
-	trace("mlx5e_configure_microflow: mf->last: %d, get_tc_priv(skb): %px", mf->last_flow, get_tc_priv(skb));
+	trace("mlx5e_configure_microflow: mf->last: %d, microflow_read(): %px", mf->last_flow, microflow_read());
 
 	/* TODO: make sanity checks here before allocating any memory, speed things up.
 	 * E.g., test for icmp and disallow.
 	*/
 
-	/* TODO: get_tc_priv must return zero on first call, or use a translation table */
-	microflow = get_tc_priv(skb);
-	if (microflow == (struct mlx5e_microflow *) -1)
-		return -1;
+	microflow = microflow_read();
+	if (!microflow) {
+		microflow = microflow_alloc();
+		if (!microflow)
+			return -1;
+		microflow_write(microflow);
+	}
 
-	/* No match */
-	if (!mf->cookie)
+	if (microflow->cookie != (u64) skb)
+		microflow_init(microflow, priv, skb);
+
+	if (microflow->nr_flows == -1)
 		goto err;
 
 	/* "Simple" rules should be handled by the normal routines */
-	if (!microflow && mf->last_flow)
+	if (microflow->nr_flows == 0 && mf->last_flow)
+		goto err;
+
+	if (unlikely(microflow->nr_flows == MICROFLOW_MAX_FLOWS))
 		goto err;
 
 	flow = rhashtable_lookup_fast(tc_ht, &mf->cookie, tc_ht_params);
 	if (!flow)
-		goto err;
-
-	microflow = microflow_get(skb, priv);
-	if (!microflow)
-		goto err;
-
-	if (microflow->nr_flows == MICROFLOW_MAX_FLOWS)
 		goto err;
 
 	microflow->path.cookies[microflow->nr_flows++] = mf->cookie;
@@ -3553,14 +3542,15 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	err = microflow_merge_work(microflow);
 	if (err)
 		goto err_work;
-	set_tc_priv(skb, 0);
+
+	microflow_write(NULL);
 
 	return 0;
 
 err_work:
 	rhashtable_remove_fast(&mf_ht, &microflow->node, mf_ht_params);
 err:
-	microflow_put(skb, microflow);
+	microflow->nr_flows = -1;
 	return -1;
 }
 
@@ -3752,6 +3742,7 @@ err_tc_ht:
 void mlx5e_tc_esw_cleanup(struct mlx5e_priv *priv)
 {
 	struct rhashtable *tc_ht = get_tc_ht(priv);
+	int cpu;
 
 	nft_gen_flow_offload_dep_ops_unregister(&ct_offload_ops);
 	flush_workqueue(priv->wq);
@@ -3759,6 +3750,8 @@ void mlx5e_tc_esw_cleanup(struct mlx5e_priv *priv)
 	rhashtable_free_and_destroy(tc_ht, _mlx5e_tc_del_flow, NULL);
 	rhashtable_free_and_destroy(&mf_ht, NULL, NULL);
 
+	for_each_possible_cpu(cpu)
+		microflow_free(per_cpu(current_microflow, cpu));
 	kmem_cache_destroy(microflow_cache);
 }
 

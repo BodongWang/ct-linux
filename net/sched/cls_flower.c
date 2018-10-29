@@ -193,20 +193,17 @@ static u8 fl_ct_get_state(enum ip_conntrack_info ctinfo)
 	return ct_state;
 }
 
-static void notify_underlying_device(struct sk_buff *skb, const struct tcf_proto *tp,
-				     struct cls_fl_filter *f)
+static void fl_notify_underlying_device(struct sk_buff *skb, const struct tcf_proto *tp,
+					struct cls_fl_filter *f)
 {
-	struct tcf_block *block = tp->chain->block;
 	struct tc_microflow_offload mf = { skb, (unsigned long) f, 0 };
+	struct tcf_block *block = tp->chain->block;
+	struct tc_action **actions = f->exts.actions;
+	int nr_actions = f->exts.nr_actions;
 
 	/* TODO: can we do it in the driver? need RCU support */
-	if (f) {
-		struct tc_action **actions = f->exts.actions;
-		int nr_actions = f->exts.nr_actions;
-
-		atrace(nr_actions > 0);
-		mf.last_flow = !is_tcf_gact_goto_chain(actions[nr_actions-1]);
-	}
+	atrace(nr_actions > 0);
+	mf.last_flow = !is_tcf_gact_goto_chain(actions[nr_actions-1]);
 
 	/* TODO: should be replaced by something else TBD */
 	tc_setup_cb_call(block, NULL, TC_SETUP_MICROFLOW, &mf, false);
@@ -250,19 +247,13 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 		f = fl_lookup(mask, &skb_mkey);
 		if (f && !tc_skip_sw(f->flags)) {
 			trace("calling notify_underlying_device with f: %px", f);
-			notify_underlying_device(skb, tp, f);
+			fl_notify_underlying_device(skb, tp, f);
 
 			*res = f->res;
 			return tcf_exts_exec(skb, &f->exts, res);
 		}
 	}
 
-	trace("calling notify_underlying_device with f: NULL");
-	/*
-	 * Assumption: only one tp per protocol.
-	 * All the rules sharing the same protocol should have the same prio as well.
-	 */
-	notify_underlying_device(skb, tp, NULL);
 	return -1;
 }
 
