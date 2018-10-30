@@ -135,6 +135,8 @@ struct mlx5e_microflow {
 
 	u64 cookie;
 
+	struct nf_conntrack_tuple tuple;
+
 	int nr_flows;
 	struct {
 		unsigned long	     cookies[MICROFLOW_MAX_FLOWS];
@@ -3064,116 +3066,6 @@ static int microflow_merge_mirred(struct mlx5e_tc_flow *mflow,
 	return 0;
 }
 
-static struct mlx5e_tc_flow *microflow_ct_flow(struct mlx5e_priv *priv,
-					       struct sk_buff *skb,
-					       struct nf_conntrack_tuple *nf_tuple)
-{
-	void *headers_c, *headers_v;
-	struct mlx5_flow_spec *spec;
-	struct mlx5e_tc_flow *flow;
-
-	trace("microflow_ct_flow");
-
-	flow = alloc_flow(priv);
-	if (!flow)
-		goto err_flow;
-
-	/* TODO: is that all the flags needed? */
-	flow->flags = MLX5E_TC_FLOW_ESWITCH |
-		      MLX5E_TC_INGRESS |
-		      MLX5E_TC_FLOW_TUPLE;
-	flow->esw_attr->match_level = MLX5_MATCH_L4;
-
-	/* TODO: allocate in allow_flow? */
-	flow->esw_attr->counter = mlx5_fc_alloc(GFP_ATOMIC);
-	if (!flow->esw_attr->counter)
-		goto err_counter;
-
-	spec = &flow->esw_attr->parse_attr->spec;
-
-	trace("ct: 5tuple: (ethtype: %X) %d, IPs %pI4, %pI4 ports %d, %d",
-                        ntohs(skb->protocol),
-                        nf_tuple->dst.protonum,
-                        &nf_tuple->src.u3.ip,
-                        &nf_tuple->dst.u3.ip,
-                        ntohs(nf_tuple->src.u.udp.port),
-                        ntohs(nf_tuple->dst.u.udp.port));
-
-	if (skb_tunnel_info(skb)) {
-		trace("merge CT: tunnel info exist");
-		headers_c = MLX5_ADDR_OF(fte_match_param, spec->match_criteria,
-					 inner_headers);
-		headers_v = MLX5_ADDR_OF(fte_match_param, spec->match_value,
-					 inner_headers);
-	} else {
-		trace("merge CT: tunnel info does not exist");
-		headers_c = MLX5_ADDR_OF(fte_match_param, spec->match_criteria,
-					 outer_headers);
-		headers_v = MLX5_ADDR_OF(fte_match_param, spec->match_value,
-					 outer_headers);
-	}
-
-	if (skb->protocol == htons(ETH_P_IP)) {
-		memcpy(MLX5_ADDR_OF(fte_match_set_lyr_2_4, headers_v,
-					src_ipv4_src_ipv6.ipv4_layout.ipv4),
-					&nf_tuple->src.u3.ip,
-					4);
-		memcpy(MLX5_ADDR_OF(fte_match_set_lyr_2_4, headers_v,
-					dst_ipv4_dst_ipv6.ipv4_layout.ipv4),
-					&nf_tuple->dst.u3.ip,
-					4);
-
-		MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c,
-					src_ipv4_src_ipv6.ipv4_layout.ipv4);
-		MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c,
-					dst_ipv4_dst_ipv6.ipv4_layout.ipv4);
-	} else {
-		etrace("IPv6 is not supported yet");
-		goto err;
-	}
-
-	MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, ip_protocol);
-	MLX5_SET(fte_match_set_lyr_2_4, headers_v, ip_protocol, nf_tuple->dst.protonum);
-
-	switch (nf_tuple->dst.protonum) {
-	case IPPROTO_UDP:
-		MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, udp_dport);
-		MLX5_SET(fte_match_set_lyr_2_4, headers_v, udp_dport, ntohs(nf_tuple->dst.u.udp.port));
-
-		MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, udp_sport);
-		MLX5_SET(fte_match_set_lyr_2_4, headers_v, udp_sport, ntohs(nf_tuple->src.u.udp.port));
-	break;
-	case IPPROTO_TCP:
-		MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, tcp_dport);
-		MLX5_SET(fte_match_set_lyr_2_4, headers_v, tcp_dport, ntohs(nf_tuple->dst.u.tcp.port));
-
-		MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, tcp_sport);
-		MLX5_SET(fte_match_set_lyr_2_4, headers_v, tcp_sport, ntohs(nf_tuple->src.u.tcp.port));
-
-		// FIN=1 SYN=2 RST=4 PSH=8 ACK=16 URG=32
-		MLX5_SET(fte_match_set_lyr_2_4, headers_c, tcp_flags, 0x17);
-		MLX5_SET(fte_match_set_lyr_2_4, headers_v, tcp_flags, 0x10);
-	break;
-	case IPPROTO_ICMP:
-		/* TODO: can we support it? what is the icmp header format? */
-		etrace("ICMP is not yet supported");
-		goto err;
-	default:
-		etrace("Only UDP, TCP and ICMP is supported");
-		goto err;
-	}
-
-	return flow;
-
-err:
-	kfree(flow->esw_attr->counter);
-err_counter:
-	kvfree(flow->esw_attr->parse_attr);
-	kfree(flow);
-err_flow:
-	return NULL;
-}
-
 static int microflow_merge_hdr(struct mlx5e_priv *priv,
 			       struct mlx5e_tc_flow *mflow,
 			       struct mlx5e_tc_flow *flow)
@@ -3227,6 +3119,79 @@ static void microflow_merge_vxlan(struct mlx5e_tc_flow *mflow,
 
 	mflow->esw_attr->parse_attr->mirred_ifindex = flow->esw_attr->parse_attr->mirred_ifindex;
 	mflow->esw_attr->parse_attr->tun_info = flow->esw_attr->parse_attr->tun_info;
+}
+
+static void microflow_merge_tuple(struct mlx5e_tc_flow *mflow,
+				  struct nf_conntrack_tuple *nf_tuple)
+{
+	struct mlx5_flow_spec *spec = &mflow->esw_attr->parse_attr->spec;
+	void *headers_c, *headers_v;
+	trace("microflow_tuple_to_spec");
+
+	trace("ct: 5tuple: (ethtype: %X) %d, IPs %pI4, %pI4 ports %d, %d",
+                        ntohs(nf_tuple->src.l3num),
+                        nf_tuple->dst.protonum,
+                        &nf_tuple->src.u3.ip,
+                        &nf_tuple->dst.u3.ip,
+                        ntohs(nf_tuple->src.u.udp.port),
+                        ntohs(nf_tuple->dst.u.udp.port));
+
+	if (mflow->esw_attr->action & MLX5_FLOW_CONTEXT_ACTION_DECAP) {
+		trace("merge CT: tunnel info exist");
+		headers_c = MLX5_ADDR_OF(fte_match_param, spec->match_criteria,
+					 inner_headers);
+		headers_v = MLX5_ADDR_OF(fte_match_param, spec->match_value,
+					 inner_headers);
+	} else {
+		trace("merge CT: tunnel info does not exist");
+		headers_c = MLX5_ADDR_OF(fte_match_param, spec->match_criteria,
+					 outer_headers);
+		headers_v = MLX5_ADDR_OF(fte_match_param, spec->match_value,
+					 outer_headers);
+	}
+
+	MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, ethertype);
+	MLX5_SET(fte_match_set_lyr_2_4, headers_v, ethertype, nf_tuple->src.l3num);
+
+	if (nf_tuple->src.l3num == htons(ETH_P_IP)) {
+		memcpy(MLX5_ADDR_OF(fte_match_set_lyr_2_4, headers_v,
+					src_ipv4_src_ipv6.ipv4_layout.ipv4),
+					&nf_tuple->src.u3.ip,
+					4);
+		memcpy(MLX5_ADDR_OF(fte_match_set_lyr_2_4, headers_v,
+					dst_ipv4_dst_ipv6.ipv4_layout.ipv4),
+					&nf_tuple->dst.u3.ip,
+					4);
+
+		MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c,
+					src_ipv4_src_ipv6.ipv4_layout.ipv4);
+		MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c,
+					dst_ipv4_dst_ipv6.ipv4_layout.ipv4);
+	}
+
+	MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, ip_protocol);
+	MLX5_SET(fte_match_set_lyr_2_4, headers_v, ip_protocol, nf_tuple->dst.protonum);
+
+	switch (nf_tuple->dst.protonum) {
+	case IPPROTO_UDP:
+		MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, udp_dport);
+		MLX5_SET(fte_match_set_lyr_2_4, headers_v, udp_dport, ntohs(nf_tuple->dst.u.udp.port));
+
+		MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, udp_sport);
+		MLX5_SET(fte_match_set_lyr_2_4, headers_v, udp_sport, ntohs(nf_tuple->src.u.udp.port));
+	break;
+	case IPPROTO_TCP:
+		MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, tcp_dport);
+		MLX5_SET(fte_match_set_lyr_2_4, headers_v, tcp_dport, ntohs(nf_tuple->dst.u.tcp.port));
+
+		MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, tcp_sport);
+		MLX5_SET(fte_match_set_lyr_2_4, headers_v, tcp_sport, ntohs(nf_tuple->src.u.tcp.port));
+
+		// FIN=1 SYN=2 RST=4 PSH=8 ACK=16 URG=32
+		MLX5_SET(fte_match_set_lyr_2_4, headers_c, tcp_flags, 0x17);
+		MLX5_SET(fte_match_set_lyr_2_4, headers_v, tcp_flags, 0x10);
+	break;
+	}
 }
 
 DEFINE_PER_CPU(struct mlx5e_microflow *, current_microflow) = NULL;
@@ -3366,6 +3331,8 @@ static int __microflow_merge(struct mlx5e_microflow *microflow)
 		microflow->dummy_counters[i] = flow->esw_attr->counter;
 	}
 
+	microflow_merge_tuple(mflow, &microflow->tuple);
+
 	/* TODO: Workaround: crashes otherwise, should fix */
 	mflow->esw_attr->action = mflow->esw_attr->action & ~MLX5_FLOW_CONTEXT_ACTION_CT;
 
@@ -3450,9 +3417,16 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 	if (flow)
 		goto out;
 
-	flow = microflow_ct_flow(priv, skb, tuple);
-	if (!flow)
-		goto err;
+	/* TODO: temp */
+	flow = alloc_flow(priv);
+	/* TODO: is that all the flags needed? */
+	flow->flags = MLX5E_TC_FLOW_ESWITCH |
+		      MLX5E_TC_INGRESS |
+		      MLX5E_TC_FLOW_TUPLE;
+
+	flow->esw_attr->counter = mlx5_fc_alloc(GFP_ATOMIC);
+	if (!flow->esw_attr->counter)
+		goto err_free;
 
 	/* TODO: temp */
 	flow->net = cto->net;
@@ -3487,6 +3461,75 @@ err:
 	return -1;
 }
 
+int microflow_extract_tuple(struct mlx5e_microflow *microflow,
+			    struct sk_buff *skb)
+{
+	struct nf_conntrack_tuple *nf_tuple = &microflow->tuple;
+	struct iphdr *iph, _iph;
+	__be16 *ports, _ports[2];
+	int ihl;
+
+	if (skb->protocol != htons(ETH_P_IP) &&
+	    skb->protocol != htons(ETH_P_IPV6))
+		goto err;
+
+	if (skb->protocol == htons(ETH_P_IPV6)) {
+		ntrace("IPv6 is not supported yet");
+		goto err;
+	}
+
+	iph = skb_header_pointer(skb, skb_network_offset(skb), sizeof(_iph), &_iph);
+	if (iph == NULL)
+		goto err;
+
+	ihl = ip_hdrlen(skb);
+	if (ihl > sizeof(struct iphdr)) {
+		/* TODO: is that right? */
+		ntrace("Offload with IPv4 options is not supported yet");
+		goto err;
+	}
+
+	if (iph->frag_off & htons(IP_MF | IP_OFFSET)) {
+		ntrace("IP fragments are not supported");
+		goto err;
+	}
+
+	nf_tuple->src.l3num = skb->protocol;
+	nf_tuple->dst.protonum = iph->protocol;
+	nf_tuple->src.u3.ip = iph->saddr;
+	nf_tuple->dst.u3.ip = iph->daddr;
+
+	ports = skb_header_pointer(skb, skb_network_offset(skb) + ihl,
+				   sizeof(_ports), _ports);
+	if (ports == NULL)
+		goto err;
+
+	switch (nf_tuple->dst.protonum) {
+	case IPPROTO_UDP:
+	case IPPROTO_TCP:
+		nf_tuple->src.u.all = ports[0];
+		nf_tuple->dst.u.all = ports[1];
+	break;
+	case IPPROTO_ICMP:
+		/* TODO: can we support it? what is the icmp header format? */
+		ntrace("ICMP is not yet supported");
+		goto err;
+	default:
+		ntrace("Only UDP, TCP and ICMP is supported");
+		goto err;
+	}
+
+	trace("tuple %px: %u %pI4:%hu -> %pI4:%hu\n",
+	       nf_tuple, nf_tuple->dst.protonum,
+	       &nf_tuple->src.u3.ip, ntohs(nf_tuple->src.u.all),
+	       &nf_tuple->dst.u3.ip, ntohs(nf_tuple->dst.u.all));
+
+	return 0;
+
+err:
+	return -1;
+}
+
 int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 			      struct tc_microflow_offload *mf)
 {
@@ -3497,10 +3540,6 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	int err;
 
 	trace("mlx5e_configure_microflow: mf->last: %d, microflow_read(): %px", mf->last_flow, microflow_read());
-
-	/* TODO: make sanity checks here before allocating any memory, speed things up.
-	 * E.g., test for icmp and disallow.
-	*/
 
 	microflow = microflow_read();
 	if (!microflow) {
@@ -3526,6 +3565,12 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	flow = rhashtable_lookup_fast(tc_ht, &mf->cookie, tc_ht_params);
 	if (!flow)
 		goto err;
+
+	if (microflow->nr_flows == 0) {
+		err = microflow_extract_tuple(microflow, skb);
+		if (err)
+			goto err;
+	}
 
 	microflow->path.cookies[microflow->nr_flows++] = mf->cookie;
 
