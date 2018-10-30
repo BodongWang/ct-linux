@@ -46,6 +46,44 @@ static unsigned int offloaded_ct_timeout = 30*HZ;
 
 module_param(offloaded_ct_timeout, uint, 0644);
 
+#define SANITY_TEST
+#ifdef SANITY_TEST
+
+static unsigned int sanity_src_ip = 0xc0a86e01;
+module_param(sanity_src_ip, uint, 0644);
+
+static unsigned int sanity_dst_ip = 0xc0a86e8B;
+module_param(sanity_dst_ip, uint, 0644);
+
+static unsigned int sanity_l3prot = NFPROTO_IPV4;
+module_param(sanity_l3prot, uint, 0644);
+
+static unsigned int sanity_l4prot = 16;
+module_param(sanity_l4prot, uint, 0644);
+
+
+static unsigned int sanity_src_port = 1000;
+module_param(sanity_src_port, uint, 0644);
+
+static unsigned int sanity_con_num = 1;
+module_param(sanity_con_num, uint, 0644);
+
+
+enum {
+    OFFLOADED_DEBUG_EN_SANITY_BIT,
+    OFFLOADED_DEBUG_EN_SANITY = (1 << OFFLOADED_DEBUG_EN_SANITY_BIT),
+
+    OFFLOADED_DEBUG_EN_SANITY_STATS_BIT = 1,
+    OFFLOADED_DEBUG_EN_SANITY_STATS = (1 << OFFLOADED_DEBUG_EN_SANITY_STATS_BIT),
+
+};
+
+
+static unsigned int sanity_flags = 0;
+module_param(sanity_flags, uint, 0644);
+
+#endif
+
 
 #define PORTING_FLOW_TABLE
 
@@ -57,10 +95,13 @@ struct flow_table_stat {
     u32 add_failed;
     u32 add_racing;
     u32 aged;
+
+    u64 gc_max; //in jiffies
+    u64 gc_min;
+    u64 gc_avg;
+    
+    u64 gc_cnt;
 };
-
-
-
 
 struct nf_gen_flow_offload_table {
     struct list_head         list;
@@ -153,6 +194,41 @@ static inline u32 tstat_aged_get(struct nf_gen_flow_offload_table *tbl)
     return tbl->stats.aged;
 }
 
+static inline void tstat_gc_dm_update(struct nf_gen_flow_offload_table *tbl, u64 delta)
+{
+    tbl->stats.gc_min = (tbl->stats.gc_min > delta)?delta:tbl->stats.gc_min;
+    tbl->stats.gc_max = (tbl->stats.gc_max < delta)?delta:tbl->stats.gc_max;
+    tbl->stats.gc_avg = ((tbl->stats.gc_avg * tbl->stats.gc_cnt) + delta) / (tbl->stats.gc_cnt + 1);
+    tbl->stats.gc_cnt++;
+}
+
+static inline u64 tstat_gc_it_get(struct nf_gen_flow_offload_table *tbl)
+{
+    return tbl->stats.gc_cnt;
+}
+
+static inline u64 tstat_gc_dm_avg_get(struct nf_gen_flow_offload_table *tbl)
+{
+    return tbl->stats.gc_avg;
+}
+
+static inline u64 tstat_gc_dm_min_get(struct nf_gen_flow_offload_table *tbl)
+{
+    return tbl->stats.gc_min;
+}
+
+static inline u64 tstat_gc_dm_max_get(struct nf_gen_flow_offload_table *tbl)
+{
+    return tbl->stats.gc_max;
+}
+
+static inline void tstat_init(struct nf_gen_flow_offload_table *tbl)
+{
+    spin_lock_init(&tbl->stats.lock);
+    
+    tbl->stats.gc_min = (u64)-1;
+    tbl->stats.gc_max = 0;
+}
 
 
 static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow);
@@ -173,7 +249,7 @@ nf_gen_flow_offload_fill_dir(struct nf_gen_flow_offload *flow,
 
 
 static struct nf_gen_flow_offload *
-nf_gen_flow_offload_alloc(struct nf_conn *ct, int zone_id, int private_data_len)
+nf_gen_flow_offload_alloc(struct nf_conn *ct, int zone_id)
 {
     struct nf_gen_flow_offload_entry *entry;
     struct nf_gen_flow_offload *flow;
@@ -182,7 +258,7 @@ nf_gen_flow_offload_alloc(struct nf_conn *ct, int zone_id, int private_data_len)
         !atomic_inc_not_zero(&ct->ct_general.use)))
         return ERR_PTR(-EINVAL);
 
-    entry = kzalloc((sizeof(*entry) + private_data_len), GFP_ATOMIC);
+    entry = kzalloc((sizeof(*entry)), GFP_ATOMIC);
     if (!entry)
         goto err_ct_refcnt;
 
@@ -438,6 +514,7 @@ static int nf_gen_flow_offload_gc_step(struct nf_gen_flow_offload_table *flow_ta
     struct rhashtable_iter hti;
     struct nf_gen_flow_offload *flow;
     int err;
+    u64 ts = jiffies;
 
     err = rhashtable_walk_init(&flow_table->rhashtable, &hti, GFP_KERNEL);
     if (err)
@@ -475,6 +552,8 @@ out:
     rhashtable_walk_stop(&hti);
     rhashtable_walk_exit(&hti);
 
+    tstat_gc_dm_update(flow_table, (jiffies - ts));
+
     return 1;
 }
 
@@ -498,7 +577,7 @@ int nf_gen_flow_offload_table_init(struct nf_gen_flow_offload_table *flowtable)
     if (err < 0)
         return err;
 
-    spin_lock_init(&flowtable->stats.lock);
+    tstat_init(flowtable);
 
     queue_delayed_work(system_power_efficient_wq,
                &flowtable->gc_work, HZ);
@@ -553,9 +632,9 @@ static int _flowtable_add_entry(const struct net *net, int zone_id,
 {
     struct nf_gen_flow_offload_table *flowtable;
     struct nf_gen_flow_offload *flow;
-    int ret;
+    int ret = -ENOENT;
 
-    flow = nf_gen_flow_offload_alloc(ct, zone_id, 0);
+    flow = nf_gen_flow_offload_alloc(ct, zone_id);
     if (IS_ERR(flow)) {
         ret = PTR_ERR(flow);
         goto err_flow_alloc;
@@ -918,57 +997,33 @@ nft_gen_flow_offload_init(const struct net *net)
     return 0;
 }
 
-#define SANITY_TEST
 #ifdef SANITY_TEST
-
-static unsigned int sanity_src_ip = 0xc0a86e01;
-module_param(sanity_src_ip, uint, 0644);
-
-static unsigned int sanity_dst_ip = 0xc0a86e8B;
-module_param(sanity_dst_ip, uint, 0644);
-
-static unsigned int sanity_l3prot = NFPROTO_IPV4;
-module_param(sanity_l3prot, uint, 0644);
-
-static unsigned int sanity_l4prot = 16;
-module_param(sanity_l4prot, uint, 0644);
-
-
-static unsigned int sanity_src_port = 1000;
-module_param(sanity_src_port, uint, 0644);
-
-static unsigned int sanity_dst_port = 22;
-module_param(sanity_dst_port, uint, 0644);
-
-
-enum {
-    OFFLOADED_DEBUG_EN_SANITY_BIT,
-    OFFLOADED_DEBUG_EN_SANITY = (1 << OFFLOADED_DEBUG_EN_SANITY_BIT),
-
-    OFFLOADED_DEBUG_EN_SANITY_STATS_BIT,
-    OFFLOADED_DEBUG_EN_SANITY_STATS = (1 << OFFLOADED_DEBUG_EN_SANITY_STATS_BIT),
-
-};
-
-
-static unsigned int sanity_flags = 0;
-module_param(sanity_flags, uint, 0644);
 
 static int _dummy_dep_add(void * ptr, struct list_head *head)
 {
-    pr_debug("_dummy_dep_add %p", ptr);
+    struct list_head * node = kzalloc(sizeof(*node), GFP_KERNEL);
+
+    INIT_LIST_HEAD(node);
+
+    list_add_tail(node, head);
 
     return 0;
 }
 
 static void _dummy_dep_del(void * ptr, struct list_head *head)
 {
-    pr_debug("_dummy_dep_del %p", ptr);
 }
 
 static int _dummy_dep_destroy(struct list_head *head)
 {
+    struct list_head *n, *m;
+
     pr_debug("_dummy_dep_destroy");
+
+    list_for_each_safe(n, m, head) {
+        list_del(n);
+        kfree(n);
+    }
 
     return 0;
 }
@@ -1014,9 +1069,13 @@ static int _flow_proc_show(struct seq_file *m, void *v)
                         tstat_add_failed_get(flowtable),
                         tstat_add_racing_get(flowtable));
 
-        seq_printf(m, "tstats gc: aged %d \n",
-                        tstat_aged_get(flowtable));
+        seq_printf(m, "tstats gc: aged %d iterators %llu dm(avg:%llu, max:%llu, min:%llu)\n",
+                        tstat_aged_get(flowtable), tstat_gc_it_get(flowtable),
+                        tstat_gc_dm_avg_get(flowtable), 
+                        tstat_gc_dm_max_get(flowtable),
+                        tstat_gc_dm_min_get(flowtable));
     }
+
     rcu_read_unlock();
 
     return 0;
@@ -1067,22 +1126,36 @@ static int __init nft_gen_flow_offload_module_init(void)
 #ifdef SANITY_TEST
     if (sanity_flags & OFFLOADED_DEBUG_EN_SANITY) {
         struct nf_conntrack_tuple test_tuple;
-        struct nf_conntrack_zone test_zone = {NF_CT_DEFAULT_ZONE_ID, 0, NF_CT_DEFAULT_ZONE_DIR};
+        struct nf_conntrack_zone test_zone = {1, 0, NF_CT_DEFAULT_ZONE_DIR};
+        int conn, port;
+        u64 ts;
 
         nft_gen_flow_offload_dep_ops_register(&dummy_ops);
 
-        memset(&test_tuple, 0, sizeof(test_tuple));
+        ts = jiffies; 
+        port = sanity_src_port;
+        for (conn=0; conn < sanity_con_num; conn++) {
+            memset(&test_tuple, 0, sizeof(test_tuple));
 
-        test_tuple.src.u3.ip = htonl(sanity_src_ip);
-        test_tuple.src.u.tcp.port = htons(sanity_src_port);
-        test_tuple.src.l3num = sanity_l3prot;
+            test_tuple.src.u3.ip = htonl(sanity_src_ip);
+            test_tuple.src.u.tcp.port = htons(port);
+            test_tuple.src.l3num = sanity_l3prot;
 
-        test_tuple.dst.u3.ip = htonl(sanity_dst_ip);
-        test_tuple.dst.u.tcp.port = htons(sanity_dst_port);
-        test_tuple.dst.protonum = sanity_l4prot;
-        test_tuple.dst.dir = NF_CT_ZONE_DIR_ORIG;
+            test_tuple.dst.u3.ip = htonl(sanity_dst_ip);
+            test_tuple.dst.u.tcp.port = htons(port);
+            test_tuple.dst.protonum = sanity_l4prot;
+            test_tuple.dst.dir = NF_CT_ZONE_DIR_ORIG;
 
-        nft_gen_flow_offload_add(&init_net, &test_zone, &test_tuple, (void*)0xdeadbeef);
+            nft_gen_flow_offload_add(&init_net, &test_zone, &test_tuple, (void*)0xdeadbeef);
+
+            if (port++ >= 61000) {
+                port = sanity_src_port;
+                test_zone.id++;
+            }
+        }
+
+        ts = jiffies - ts;
+        printk("TEST: %d connections added in jiffies(%llu)", conn, ts);
 
         //nft_gen_flow_offload_destroy(net, &test_zone, &test_tuple);
     }
