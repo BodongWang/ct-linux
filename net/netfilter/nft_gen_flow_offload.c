@@ -43,8 +43,15 @@ static struct nf_gen_flow_offload_table __rcu *_flowtable;
 static atomic_t offloaded_flow_cnt;
 
 static unsigned int offloaded_ct_timeout = 30*HZ;
-
 module_param(offloaded_ct_timeout, uint, 0644);
+
+
+static unsigned int aging_bucket_num = 32;
+module_param(aging_bucket_num, uint, 0644);
+
+#define MAX_FLOWS_PER_GC_RUN          10000
+#define MAX_GC_RUNS_INTERVAL          (HZ / 1)
+#define MIN_GC_RUNS_INTERVAL          (HZ / 10)
 
 #define SANITY_TEST
 #ifdef SANITY_TEST
@@ -95,18 +102,67 @@ struct flow_table_stat {
     u32 add_failed;
     u32 add_racing;
     u32 aged;
+};
 
-    u64 gc_max; //in jiffies
-    u64 gc_min;
-    u64 gc_avg;
+struct flow_aging_bucket {
+    u64                 start;
+    u32                 enqueued;
+    u32                 proced;
+    struct list_head    head;    
+};
+
+struct stats_summary {
+    u32   max;
+    u32   min;
+    u32   avg;    
+};
+
+static inline void update_stats_summary(struct stats_summary * summary, 
+                                                 u32 data, u32 count)
+{
+    summary->min = min(summary->min, data);
+    summary->max = max(summary->max, data);
+    summary->avg = ((summary->avg * count) + data) / (count + 1);
+}
+
+static inline void show_stats_summary(struct seq_file *m, 
+                                            const char *prefix, 
+                                            struct stats_summary * summary)
+{
+    seq_printf(m, "%s(avg:%u, max:%u, min:%u)\n", prefix, 
+                 summary->avg, summary->max, summary->min);
+}
+
+struct flow_gc_work {
+    struct spinlock          lock; 
+    int                      curt_bucket;
+    u32                      expiration;
+    u32                      bucket_num;
+    u32                      bkt_interval;
+    u64                      abs_next_run;
     
-    u64 gc_cnt;
+    u32                      run_times; 
+    struct stats_summary     delta;
+    struct stats_summary     total;
+    struct stats_summary     stat_op;
+    struct stats_summary     destroy_op;
+
+    struct stats_summary     flows_per_run;
+
+    u32                      teardown_proced;
+    struct list_head         teardowns;
+    struct list_head         temp;
+    
+    struct flow_aging_bucket *buckets;
+    struct delayed_work      work;    
 };
 
 struct nf_gen_flow_offload_table {
-    struct list_head         list;
+    
     struct rhashtable        rhashtable;
-    struct delayed_work      gc_work;
+    struct flow_gc_work      gc_work;
+    struct workqueue_struct *flow_wq;
+
     struct flow_table_stat   stats; 
 };
 
@@ -120,7 +176,7 @@ enum nf_gen_flow_offload_tuple_dir {
 struct nf_gen_flow_offload_tuple_rhash {
     struct rhash_head           node;
     struct nf_conntrack_tuple   tuple;
-    struct nf_conntrack_zone    zone; // TODO: FIXME, less memory footprint
+    struct nf_conntrack_zone    zone; 
 };
 
 
@@ -132,18 +188,19 @@ struct nf_gen_flow_offload_tuple_rhash {
 
 struct nf_gen_flow_offload {
     struct nf_gen_flow_offload_tuple_rhash        tuplehash[FLOW_OFFLOAD_DIR_MAX];
-    u32    flags;
-    u64    timeout;
+    u32              flags;
+    u64              timeout;
+    struct list_head bkt_node;
 };
 
 
 struct nf_gen_flow_offload_entry {
-    struct nf_gen_flow_offload     flow;
-    struct nf_conn          *ct;
-    struct rcu_head         rcu_head;
-    struct spinlock         dep_lock; // FIXME, narrow down spin_lock, don't call user callback with locked.
-    struct list_head        deps;
-    struct nf_gen_flow_ct_stat stats;
+    struct nf_gen_flow_offload  flow;
+    struct nf_conn              *ct;
+    struct rcu_head             rcu_head;
+    struct spinlock             dep_lock; // FIXME, narrow down spin_lock, don't call user callback with locked.
+    struct list_head            deps;
+    struct nf_gen_flow_ct_stat  stats;
 };
 
 static inline void tstat_added_inc(struct nf_gen_flow_offload_table *tbl)
@@ -194,40 +251,9 @@ static inline u32 tstat_aged_get(struct nf_gen_flow_offload_table *tbl)
     return tbl->stats.aged;
 }
 
-static inline void tstat_gc_dm_update(struct nf_gen_flow_offload_table *tbl, u64 delta)
-{
-    tbl->stats.gc_min = (tbl->stats.gc_min > delta)?delta:tbl->stats.gc_min;
-    tbl->stats.gc_max = (tbl->stats.gc_max < delta)?delta:tbl->stats.gc_max;
-    tbl->stats.gc_avg = ((tbl->stats.gc_avg * tbl->stats.gc_cnt) + delta) / (tbl->stats.gc_cnt + 1);
-    tbl->stats.gc_cnt++;
-}
-
-static inline u64 tstat_gc_it_get(struct nf_gen_flow_offload_table *tbl)
-{
-    return tbl->stats.gc_cnt;
-}
-
-static inline u64 tstat_gc_dm_avg_get(struct nf_gen_flow_offload_table *tbl)
-{
-    return tbl->stats.gc_avg;
-}
-
-static inline u64 tstat_gc_dm_min_get(struct nf_gen_flow_offload_table *tbl)
-{
-    return tbl->stats.gc_min;
-}
-
-static inline u64 tstat_gc_dm_max_get(struct nf_gen_flow_offload_table *tbl)
-{
-    return tbl->stats.gc_max;
-}
-
 static inline void tstat_init(struct nf_gen_flow_offload_table *tbl)
 {
-    spin_lock_init(&tbl->stats.lock);
-    
-    tbl->stats.gc_min = (u64)-1;
-    tbl->stats.gc_max = 0;
+    spin_lock_init(&tbl->stats.lock);    
 }
 
 
@@ -263,6 +289,7 @@ nf_gen_flow_offload_alloc(struct nf_conn *ct, int zone_id)
         goto err_ct_refcnt;
 
     flow = &entry->flow;
+    INIT_LIST_HEAD(&flow->bkt_node);
 
     entry->ct = ct;
 
@@ -279,7 +306,6 @@ err_ct_refcnt:
 
     return ERR_PTR(-ENOMEM);
 }
-
 
 static void nf_gen_flow_offload_fixup_ct_state(struct nf_conn *ct)
 {
@@ -403,6 +429,9 @@ static void nf_gen_flow_offload_del(struct nf_gen_flow_offload_table *flow_table
                  struct nf_gen_flow_offload *flow)
 {
     struct nf_gen_flow_offload_entry *e;
+    u32 ts;
+    
+    pr_debug("flow %p deleting", flow);
 
     rhashtable_remove_fast(&flow_table->rhashtable,
                    &flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].node,
@@ -420,18 +449,12 @@ static void nf_gen_flow_offload_del(struct nf_gen_flow_offload_table *flow_table
        timeout with OFFLOAD_BIT set */
     nf_gen_flow_offload_fixup_ct_state(e->ct);
 
+    ts = jiffies;
     nft_gen_flow_offload_destroy_dep(flow);
+    update_stats_summary(&flow_table->gc_work.destroy_op,
+                        (u32)(jiffies-ts), flow_table->gc_work.run_times);
 }
 
-void nf_gen_flow_offload_teardown(struct nf_gen_flow_offload *flow)
-{
-    struct nf_gen_flow_offload_entry *e;
-
-    flow->flags |= FLOW_OFFLOAD_TEARDOWN;
-
-    e = container_of(flow, struct nf_gen_flow_offload_entry, flow);
-    nf_gen_flow_offload_fixup_ct_state(e->ct);
-}
 
 static struct nf_gen_flow_offload_tuple_rhash *
 nf_gen_flow_offload_lookup(struct nf_gen_flow_offload_table *flow_table,
@@ -495,117 +518,447 @@ out:
     return err;
 }
 
-static inline bool nf_gen_flow_offload_has_expired(const struct nf_gen_flow_offload *flow)
+static inline bool 
+nf_gen_flow_offload_has_expired(const struct nf_gen_flow_offload *flow)
 {
-    return (((flow->flags & (FLOW_OFFLOAD_AGING | FLOW_OFFLOAD_DYING | FLOW_OFFLOAD_TEARDOWN))
-                == FLOW_OFFLOAD_AGING) && (flow->timeout <= jiffies));
+    return (flow->timeout <= jiffies);
 }
 
-static inline void nf_gen_flow_offload_set_aging(struct nf_gen_flow_offload *flow)
+static inline struct flow_aging_bucket *_current_bucket(struct flow_gc_work *gc_work)
 {
-    flow->flags |= FLOW_OFFLOAD_AGING;
+    return &gc_work->buckets[gc_work->curt_bucket];
 }
 
-
-
-static int nf_gen_flow_offload_gc_step(struct nf_gen_flow_offload_table *flow_table)
+static inline void _put_into_bucket(struct flow_gc_work *gc_work, int bucket_id,
+                                            struct list_head *node, bool in_aging)
 {
-    struct nf_gen_flow_offload_tuple_rhash *tuplehash;
-    struct rhashtable_iter hti;
-    struct nf_gen_flow_offload *flow;
-    int err;
-    u64 ts = jiffies;
+    if (!in_aging || (bucket_id != gc_work->curt_bucket))
+        list_add_tail(node, &gc_work->buckets[bucket_id].head);
+    else
+        list_add_tail(node, &gc_work->temp);
+        
+    gc_work->buckets[bucket_id].enqueued++;
+}
 
-    err = rhashtable_walk_init(&flow_table->rhashtable, &hti, GFP_KERNEL);
-    if (err)
-        return 0;
+static inline struct nf_gen_flow_offload *
+_get_one_from_teardowns(struct flow_gc_work *gc_work)
+{
+    struct nf_gen_flow_offload * flow = NULL;
+    
+    spin_lock(&gc_work->lock);
 
-    rhashtable_walk_start(&hti);
+    if (!list_empty_careful(&gc_work->teardowns)) {
+        flow = list_first_entry(&gc_work->teardowns, struct nf_gen_flow_offload, bkt_node); 
+        list_del(&flow->bkt_node);
 
-    while ((tuplehash = rhashtable_walk_next(&hti))) {
-        if (IS_ERR(tuplehash)) {
-            err = PTR_ERR(tuplehash);
-            if (err != -EAGAIN)
-                goto out;
-
-            continue;
-        }
-        if (tuplehash->tuple.dst.dir)
-            continue;
-
-        flow = container_of(tuplehash, struct nf_gen_flow_offload, tuplehash[0]);
-
-        if (nf_gen_flow_offload_has_expired(flow)) {
-            nft_gen_flow_offload_stats(flow);
-
-            if (nf_gen_flow_offload_has_expired(flow)) {
-                tstat_aged_inc(flow_table);
-                flow->flags |= FLOW_OFFLOAD_TEARDOWN;
-            }
-        }
-
-        if (flow->flags & (FLOW_OFFLOAD_DYING |
-                        FLOW_OFFLOAD_TEARDOWN))
-            nf_gen_flow_offload_del(flow_table, flow);
+        gc_work->teardown_proced++;
     }
-out:
-    rhashtable_walk_stop(&hti);
-    rhashtable_walk_exit(&hti);
 
-    tstat_gc_dm_update(flow_table, (jiffies - ts));
+//    pr_debug("get %p from teardown", flow);
+    spin_unlock(&gc_work->lock);
 
-    return 1;
+    return flow;
+}
+
+static inline struct nf_gen_flow_offload *
+_get_one_from_bucket(struct flow_gc_work *gc_work)
+{
+    struct nf_gen_flow_offload * flow = NULL;
+    struct flow_aging_bucket * curt_bucket = _current_bucket(gc_work);
+
+    pr_debug("get bucket %d start %llu now %lu", gc_work->curt_bucket, 
+                                         curt_bucket->start, jiffies);
+
+    if (jiffies < curt_bucket->start)
+        return ERR_PTR(-EAGAIN);
+    
+    spin_lock(&gc_work->lock);
+
+    if (!list_empty_careful(&curt_bucket->head)) {
+
+        flow = list_first_entry(&curt_bucket->head, struct nf_gen_flow_offload, bkt_node); 
+        list_del(&flow->bkt_node);
+
+        /* no need to check TEARDOWN flag, since this entry is in bucket still */
+        flow->flags |= FLOW_OFFLOAD_AGING;
+
+        curt_bucket->proced++;
+    } else {
+
+        /* check temp list of this run, if not empty, wait for next */
+        if (!list_empty_careful(&gc_work->temp)) {
+            list_splice_tail_init(&gc_work->temp, &gc_work->buckets[gc_work->curt_bucket].head);
+            /* already get_stats in this run, wait a mini interval */
+            flow = ERR_PTR(-EAGAIN);
+        }
+    }
+
+//    pr_debug("get %p from bucket %d", flow, gc_work->curt_bucket);
+    
+    spin_unlock(&gc_work->lock);
+
+    return flow;
+}
+
+static inline void _move_to_next_bucket(struct flow_gc_work *gc_work)
+{
+    spin_lock(&gc_work->lock);
+
+    gc_work->buckets[gc_work->curt_bucket].start += gc_work->bkt_interval * \
+                                                    gc_work->bucket_num;
+    /* TODO: do some check on current bucket  */
+
+    gc_work->curt_bucket = (gc_work->curt_bucket + 1) % gc_work->bucket_num;
+
+    pr_debug("move to bucket %d, start %llu", gc_work->curt_bucket, 
+                          gc_work->buckets[gc_work->curt_bucket].start);
+    spin_unlock(&gc_work->lock);
+}
+
+static inline int _get_bucket_id_of_flow(struct flow_gc_work *gc_work, 
+                                                 struct nf_gen_flow_offload *flow)
+{
+    int tgt_bucket;
+    u64 curt_bucket_start = gc_work->buckets[gc_work->curt_bucket].start;
+
+    if (flow->timeout > curt_bucket_start) {
+        tgt_bucket = (flow->timeout - curt_bucket_start) 
+                     / gc_work->bkt_interval;
+        
+        if (tgt_bucket >= gc_work->bucket_num) 
+            tgt_bucket = gc_work->bucket_num - 1;
+    } else {
+        /* abnormal, add into temp */
+        tgt_bucket = 0;
+    }
+
+    if (tgt_bucket > 3) {
+        /* randomize value in [0- 1/2 tgt_bucket], adjusted tgt in [1/2 tgt_bucket, tgt_bucket]
+           avoid to set tgt_bucket as 0, so minimal tgt_bucket is 4*/
+        u32 r;
+        get_random_bytes(&r, sizeof(r));
+        
+        /* put randomization here */
+        tgt_bucket = tgt_bucket - (r%(tgt_bucket/2));
+
+    } 
+
+    /* get real bucket index */ 
+    tgt_bucket = (gc_work->curt_bucket + tgt_bucket) % gc_work->bucket_num;
+
+    return tgt_bucket;
+}
+
+static void _reschedule_flow_aging(struct flow_gc_work *gc_work, 
+                                             struct nf_gen_flow_offload *flow)
+{
+    int tgt_bucket;
+    struct nf_gen_flow_offload_table *flowtable = \
+            container_of(gc_work, struct nf_gen_flow_offload_table, gc_work);
+
+    spin_lock(&gc_work->lock);
+
+    flow->flags &= (~FLOW_OFFLOAD_AGING);
+
+    if (nf_gen_flow_offload_has_expired(flow)) {
+        pr_debug("flow %p aged out", flow);
+        tstat_aged_inc(flowtable);
+        flow->flags |= FLOW_OFFLOAD_TEARDOWN;
+        list_add_tail(&flow->bkt_node, &gc_work->teardowns);
+        
+    } else {
+        tgt_bucket = _get_bucket_id_of_flow(gc_work, flow);
+
+        pr_debug("flow %p schedue to %d", flow, tgt_bucket);
+
+        _put_into_bucket(&flowtable->gc_work, tgt_bucket, &flow->bkt_node, true);
+    }
+    
+    spin_unlock(&gc_work->lock); 
+}
+
+static inline int _get_next_run(struct flow_gc_work *gc_work, int target_flows)
+{
+    struct flow_aging_bucket * curt_bucket = _current_bucket(gc_work);
+    int next_run = MIN_GC_RUNS_INTERVAL;
+    
+    if (target_flows > 0)
+    {
+        /* no more to process in this run */
+        
+        if (curt_bucket->start > jiffies) {
+            /* wait current bucket started */
+            next_run = curt_bucket->start - jiffies;
+
+            if (next_run < MIN_GC_RUNS_INTERVAL)
+                next_run = MIN_GC_RUNS_INTERVAL;
+
+            if (next_run > MAX_GC_RUNS_INTERVAL)
+                next_run = MAX_GC_RUNS_INTERVAL;
+        } else {
+           /* some flows in current bucket, wait ??? */ 
+        }
+        
+    } else {
+        spin_lock(&gc_work->lock);        
+        if (!list_empty_careful(&gc_work->temp)) {
+            /* put temp back to curt bucket for next run */
+            list_splice_tail_init(&gc_work->temp, &curt_bucket->head);
+        }
+        spin_unlock(&gc_work->lock);
+    }
+
+//    pr_debug("next_run %d", next_run);
+    
+    return next_run;
+}
+
+static inline void nf_gen_flow_offload_set_aging(struct nf_gen_flow_offload_table *flowtable, 
+                                                 struct nf_gen_flow_offload *flow)
+{
+    int tgt_bucket;
+
+    spin_lock(&flowtable->gc_work.lock);
+
+    if (!(flow->flags & FLOW_OFFLOAD_TEARDOWN)) {
+        /* not in teardown */
+        flow->timeout = jiffies + flowtable->gc_work.expiration;
+
+        if (!(flow->flags & FLOW_OFFLOAD_AGING)) {
+            /* no in aging, otherwise, aging process can schedule this entry */
+            tgt_bucket = _get_bucket_id_of_flow(&flowtable->gc_work, flow);
+            if (!list_empty_careful(&flow->bkt_node))
+                list_del(&flow->bkt_node);
+
+            pr_debug("set_aging update bucket to %d", tgt_bucket);
+            _put_into_bucket(&flowtable->gc_work, tgt_bucket, &flow->bkt_node, false);
+        }
+    }
+
+    spin_unlock(&flowtable->gc_work.lock); 
+}
+
+static inline void nf_gen_flow_offload_teardown(struct nf_gen_flow_offload_table *flowtable, 
+                                                 struct nf_gen_flow_offload *flow)
+{
+    if (flow->flags & FLOW_OFFLOAD_TEARDOWN)
+        return;
+
+    spin_lock(&flowtable->gc_work.lock);
+    
+    flow->flags |= FLOW_OFFLOAD_TEARDOWN;
+
+    /* not in aging, put it into teardown */
+    if (!(flow->flags & FLOW_OFFLOAD_AGING)) {
+        list_del(&flow->bkt_node);
+        list_add_tail(&flow->bkt_node, &flowtable->gc_work.teardowns);
+    }
+    
+    spin_unlock(&flowtable->gc_work.lock); 
+}
+
+static inline void show_buckets(struct seq_file *m, struct flow_gc_work *gc_work)
+{
+    int i;
+
+    seq_printf(m, "Free %u flows from teardown list\n", gc_work->teardown_proced);
+    
+    for (i=0; i<gc_work->bucket_num; i++) {
+        seq_printf(m, "....bucket[%3d]: %8u enqueued %8u processed, start at %llu(jiffies)\n",  
+                      i, gc_work->buckets[i].enqueued, gc_work->buckets[i].proced, 
+                      gc_work->buckets[i].start);
+    }
+}
+
+
+static inline void _gc_stats_update(struct flow_gc_work *gc_work, u64 raw[])
+{
+    u32 data = abs(raw[0] - gc_work->abs_next_run);
+
+    if (gc_work->abs_next_run > 0) {
+        update_stats_summary(&gc_work->delta, data, gc_work->run_times);
+    }
+
+    data = jiffies - raw[0];
+    update_stats_summary(&gc_work->total, data, gc_work->run_times);
+
+    data = raw[1];
+    if (data != (u32)-1)
+        update_stats_summary(&gc_work->stat_op, data, gc_work->run_times);
+
+    data = raw[2];
+    if (data != (u32)-1)
+        update_stats_summary(&gc_work->flows_per_run, data, gc_work->run_times);
+    
+    gc_work->run_times++;
+}
+
+static int nf_gen_flow_offload_gc_step(struct flow_gc_work *gc_work, int target_flows)
+{
+    struct nf_gen_flow_offload_table *flowtable = container_of(gc_work, \
+                                                  struct nf_gen_flow_offload_table, \
+                                                  gc_work);   
+    struct nf_gen_flow_offload *flow;
+    int next_run, proced_flows;
+    u64 stats_data[3];
+
+    stats_data[0] = jiffies;
+    stats_data[1] = (u32)-1;
+    stats_data[2] = (u32)-1;
+
+    proced_flows = 0;
+
+//    pr_debug("gc_in exp %d bkt_num %d interval %d", gc_work->expiration, gc_work->bucket_num, gc_work->bkt_interval);    
+    
+    while (proced_flows < target_flows) {
+        /* process teardown list first */
+        flow = _get_one_from_teardowns(gc_work);
+        if (flow) {
+            nf_gen_flow_offload_del(flowtable, flow);
+            proced_flows++;
+            continue;
+        }
+
+        /* aging */
+        flow = _get_one_from_bucket(gc_work);
+        if (IS_ERR(flow))
+            break;
+
+        if (flow) {
+            stats_data[1] = jiffies;
+            nft_gen_flow_offload_stats(flow);
+            stats_data[1] = jiffies - stats_data[1];
+
+            _reschedule_flow_aging(gc_work, flow); 
+            proced_flows++;
+        } else {
+            /* nothing in current bucket */
+            _move_to_next_bucket(gc_work);
+        }
+    }
+
+    next_run = _get_next_run(gc_work, target_flows);
+
+    if(target_flows < INT_MAX)
+        stats_data[2] = proced_flows;
+
+    _gc_stats_update(gc_work, stats_data);
+
+    gc_work->abs_next_run = jiffies + next_run;
+
+    return next_run;
 }
 
 static void nf_gen_flow_offload_work_gc(struct work_struct *work)
 {
     struct nf_gen_flow_offload_table *flow_table;
-
-    flow_table = container_of(work, struct nf_gen_flow_offload_table, gc_work.work);
-    nf_gen_flow_offload_gc_step(flow_table);
-    queue_delayed_work(system_power_efficient_wq, &flow_table->gc_work, HZ);
+    int target_flows = MAX_FLOWS_PER_GC_RUN;
+    int next_run;
+    
+    flow_table = container_of(work, struct nf_gen_flow_offload_table, gc_work.work.work);
+    next_run = nf_gen_flow_offload_gc_step(&flow_table->gc_work, target_flows);
+    queue_delayed_work(flow_table->flow_wq, &flow_table->gc_work.work, next_run);
 }
 
-int nf_gen_flow_offload_table_init(struct nf_gen_flow_offload_table *flowtable)
+static int nf_gen_flow_offload_init_buckets(struct flow_gc_work *gc_work, 
+                                                        u32 expiration, u32 bucket_num)
 {
-    int err;
+    int i;
+    struct flow_aging_bucket *curt_bucket, *bucket;
+    
+    /* init lock */
+    spin_lock_init(&gc_work->lock);
+    
+    /* get buckets mem */
+    gc_work->buckets = kzalloc((sizeof(gc_work->buckets[0])*bucket_num), GFP_KERNEL);
+    if (gc_work->buckets == NULL)
+        return -ENOMEM;
+ 
+    /* init bucket, current bucket from 0 */
+    /* bucket timestamp is added by offload_timeout/max_buckets */
+    gc_work->curt_bucket  = 0;
+    gc_work->expiration   = expiration;
+    gc_work->bucket_num   = bucket_num;
+    gc_work->bkt_interval = expiration / bucket_num;
 
-    INIT_DEFERRABLE_WORK(&flowtable->gc_work, nf_gen_flow_offload_work_gc);
+    gc_work->delta.min      = (u32)-1; 
+    gc_work->total.min      = (u32)-1;
+    gc_work->stat_op.min    = (u32)-1;
+    gc_work->destroy_op.min = (u32)-1;
+    
+    gc_work->flows_per_run.min = (u32)-1;
 
-    err = rhashtable_init(&flowtable->rhashtable,
-                  &nf_gen_flow_offload_rhash_params);
-    if (err < 0)
-        return err;
+    INIT_LIST_HEAD(&gc_work->teardowns);
+    INIT_LIST_HEAD(&gc_work->temp);
 
-    tstat_init(flowtable);
+    curt_bucket = _current_bucket(gc_work);
+    curt_bucket->start = jiffies;
+    INIT_LIST_HEAD(&curt_bucket->head);
+    
+    for (i=1; i<bucket_num; i++) {
+        bucket = gc_work->buckets + (gc_work->curt_bucket+i)%bucket_num;
+        bucket->start = curt_bucket->start + i*gc_work->bkt_interval ;
+        INIT_LIST_HEAD(&bucket->head);
+    }    
 
-    queue_delayed_work(system_power_efficient_wq,
-               &flowtable->gc_work, HZ);
+    INIT_DEFERRABLE_WORK(&gc_work->work, nf_gen_flow_offload_work_gc);
 
     return 0;
 }
 
-static inline void nf_gen_flow_offload_dead(struct nf_gen_flow_offload *flow)
+static void nf_gen_flow_offload_free_buckets(struct flow_gc_work *gc_work)
 {
-    flow->flags |= FLOW_OFFLOAD_DYING;
+    cancel_delayed_work_sync(&gc_work->work);
+    nf_gen_flow_offload_gc_step(gc_work, INT_MAX);
+    kfree(gc_work->buckets);
+}
+
+int nf_gen_flow_offload_table_init(struct nf_gen_flow_offload_table *flowtable)
+{
+    int err = 0;
+
+    err = nf_gen_flow_offload_init_buckets(&flowtable->gc_work, 
+                                            offloaded_ct_timeout, 
+                                            aging_bucket_num);
+    if (err < 0)
+        return err;
+
+	flowtable->flow_wq = alloc_ordered_workqueue("gen_flow_offload_wq", 0);
+	if (!flowtable->flow_wq)
+		goto _flow_wq_alloc_err;
+
+    err = rhashtable_init(&flowtable->rhashtable,
+                  &nf_gen_flow_offload_rhash_params);
+    if (err < 0)
+        goto _table_init_err;
+
+    tstat_init(flowtable);
+
+    queue_delayed_work(flowtable->flow_wq, &flowtable->gc_work.work, HZ);
+
+    return 0;
+
+_table_init_err:    
+	destroy_workqueue(flowtable->flow_wq);    
+_flow_wq_alloc_err:
+    nf_gen_flow_offload_free_buckets(&flowtable->gc_work);
+
+    return err;
 }
 
 /*  TO be changed */
 static void nf_gen_flow_offload_table_do_cleanup(struct nf_gen_flow_offload *flow, void *data)
 {
-    nf_gen_flow_offload_dead(flow);
+    nf_gen_flow_offload_teardown((struct nf_gen_flow_offload_table *)data, flow);
 }
 
-
-
-void nf_gen_flow_offload_table_free(struct nf_gen_flow_offload_table *flow_table)
+void nf_gen_flow_offload_table_free(struct nf_gen_flow_offload_table *flowtable)
 {
-    cancel_delayed_work_sync(&flow_table->gc_work);
-    nf_gen_flow_offload_table_iterate(flow_table, nf_gen_flow_offload_table_do_cleanup, NULL);
-    WARN_ON(!nf_gen_flow_offload_gc_step(flow_table));
-    rhashtable_destroy(&flow_table->rhashtable);
+    nf_gen_flow_offload_table_iterate(flowtable, nf_gen_flow_offload_table_do_cleanup, flowtable);
+    nf_gen_flow_offload_free_buckets(&flowtable->gc_work);
+	destroy_workqueue(flowtable->flow_wq); 
+    rhashtable_destroy(&flowtable->rhashtable);
 }
-
 
 #endif
 
@@ -727,8 +1080,9 @@ static int nft_gen_flow_offload_stats(struct nf_gen_flow_offload *flow)
            When TCP is disconnected by FIN, conntrack conneciton may be held by IPS_OFFLOAD
            until it is unset */
 
-        if ((last_used == 0) || (e->stats.last_used > last_used))
+        if (e->stats.last_used > last_used)
             flow->timeout = e->stats.last_used + offloaded_ct_timeout;
+        pr_debug("get_stats: new timeout %llu", flow->timeout);
     }
     rcu_read_unlock();
 
@@ -782,7 +1136,7 @@ void nft_gen_flow_offload_dep_ops_unregister(struct flow_offload_dep_ops * ops)
     flowtable = rcu_dereference(_flowtable);
 
     /* cleanup all connections, for dep list member, drv assures no need to free explicitly */
-    nf_gen_flow_offload_table_iterate(flowtable, nf_gen_flow_offload_table_do_cleanup, NULL);
+    nf_gen_flow_offload_table_iterate(flowtable, nf_gen_flow_offload_table_do_cleanup, flowtable);
     rcu_read_unlock();
 }
 
@@ -803,6 +1157,7 @@ int nft_gen_flow_offload_add(const struct net *net,
     int ret = 0;
     struct flow_offload_dep_ops * ops;
     struct nf_gen_flow_offload_table *flowtable;
+    bool teardown = false;
 
     if (rcu_access_pointer(flow_dep_ops) == NULL)
         return -EPERM;
@@ -815,9 +1170,11 @@ int nft_gen_flow_offload_add(const struct net *net,
     /* lookup */
     fhash = _flowtable_lookup(net, zone, tuple);
     if (fhash) {
+        /* flow existing, add one dep */
         dir = fhash->tuple.dst.dir;
         entry = container_of(fhash, struct nf_gen_flow_offload_entry, flow.tuplehash[dir]);
     } else {
+        /* create new flow */
         thash = nf_conntrack_find_get((struct net *)net, zone, tuple);
         if (!thash) {
             ret = -EINVAL;
@@ -860,7 +1217,7 @@ int nft_gen_flow_offload_add(const struct net *net,
 
         ret = ops->add(dep, &entry->deps);
         if (ret && (list_empty_careful(&entry->deps))) {
-            entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;
+            teardown = true;
 
             spin_unlock(&entry->dep_lock);
             rcu_read_unlock();
@@ -871,12 +1228,15 @@ int nft_gen_flow_offload_add(const struct net *net,
 
         if (ops->get_stats) {
             /* update timeout for new dep*/
-            entry->flow.timeout = jiffies + offloaded_ct_timeout;
-
-            nf_gen_flow_offload_set_aging(&entry->flow);
+            rcu_read_lock();
+            flowtable = rcu_dereference(_flowtable);
+            if (flowtable) {
+                nf_gen_flow_offload_set_aging(flowtable, &entry->flow);
+            }
+            rcu_read_unlock();            
         }
     } else {
-        entry->flow.flags |= FLOW_OFFLOAD_TEARDOWN;
+        teardown = true;
     }
     
     rcu_read_unlock();
@@ -890,6 +1250,9 @@ _flow_add_exit:
             tstat_add_failed_inc(flowtable);
         if (ret == -EAGAIN)
             tstat_add_racing_inc(flowtable);
+
+        if (teardown)
+            nf_gen_flow_offload_teardown(flowtable, &entry->flow);
     }
     rcu_read_unlock();
 
@@ -952,26 +1315,31 @@ int nft_gen_flow_offload_destroy(const struct net *net,
             const struct nf_conntrack_tuple * tuple)
 {
     struct nf_gen_flow_offload_tuple_rhash *thash;
+    struct nf_gen_flow_offload_table *flowtable;
     struct nf_gen_flow_offload *flow;
     enum nf_gen_flow_offload_tuple_dir dir;
 
-    NFT_GEN_FLOW_FUNC_ENTRY();
-
-    if (rcu_access_pointer(_flowtable) == NULL)
-        return 0;
+    if (rcu_access_pointer(flow_dep_ops) == NULL)
+        return -EPERM;
 
     _flow_offload_debug_op(zone, tuple, "Destroy");
 
-    thash = _flowtable_lookup(net, zone, tuple);
-    if (thash != NULL) {
-        dir = thash->tuple.dst.dir;
+    rcu_read_lock();
+    
+    flowtable = rcu_dereference(_flowtable);
+    if (flowtable) {
+    
+        thash = _flowtable_lookup(net, zone, tuple);
+        if (thash != NULL) {        
+            dir = thash->tuple.dst.dir;
 
-        flow = container_of(thash, struct nf_gen_flow_offload, tuplehash[dir]);
+            flow = container_of(thash, struct nf_gen_flow_offload, tuplehash[dir]);
 
-        flow->flags |= FLOW_OFFLOAD_TEARDOWN; // FIXME: replace flag set by set_and_test to start async work
+            nf_gen_flow_offload_teardown(flowtable, flow);
+        }
     }
 
-    NFT_GEN_FLOW_FUNC_EXIT();
+    rcu_read_unlock();
 
     return 0;
 }
@@ -1003,10 +1371,11 @@ static int _dummy_dep_add(void * ptr, struct list_head *head)
 {
     struct list_head * node = kzalloc(sizeof(*node), GFP_KERNEL);
 
+    if (!node)
+        return -1;
+
     INIT_LIST_HEAD(node);
-
     list_add_tail(node, head);
-
     return 0;
 }
 
@@ -1069,11 +1438,22 @@ static int _flow_proc_show(struct seq_file *m, void *v)
                         tstat_add_failed_get(flowtable),
                         tstat_add_racing_get(flowtable));
 
-        seq_printf(m, "tstats gc: aged %d iterators %llu dm(avg:%llu, max:%llu, min:%llu)\n",
-                        tstat_aged_get(flowtable), tstat_gc_it_get(flowtable),
-                        tstat_gc_dm_avg_get(flowtable), 
-                        tstat_gc_dm_max_get(flowtable),
-                        tstat_gc_dm_min_get(flowtable));
+        seq_printf(m, "tstats gc: aged %d run %u \n", tstat_aged_get(flowtable),
+                                                    flowtable->gc_work.run_times); 
+
+        show_stats_summary(m, "tstats gc: total", &flowtable->gc_work.total);
+        show_stats_summary(m, "tstats gc: delta", &flowtable->gc_work.delta);
+        show_stats_summary(m, "tstats gc: stat_op", &flowtable->gc_work.stat_op);
+        show_stats_summary(m, "tstats gc: destroy_op", &flowtable->gc_work.destroy_op);
+
+        show_stats_summary(m, "tstats gc: flows per run", &flowtable->gc_work.flows_per_run);
+
+        show_buckets(m, &flowtable->gc_work);
+
+        seq_printf(m, "mstats flow: hash %lu bytes flow %lu bytes entry %lu bytes\n",
+                        sizeof(struct nf_gen_flow_offload_tuple_rhash),
+                        sizeof(struct nf_gen_flow_offload), 
+                        sizeof(struct nf_gen_flow_offload_entry));
     }
 
     rcu_read_unlock();
