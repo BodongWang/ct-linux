@@ -307,14 +307,13 @@ void mlx5_fc_destroy(struct mlx5_core_dev *dev, struct mlx5_fc *counter)
 		return;
 
 	if (counter->aging) {
-		counter->deleted = true;
-
 		if (counter->dummy) {
 			spin_lock(&fc_stats->addlist_lock);
 			list_add(&counter->list, &fc_stats->addlist);
 			spin_unlock(&fc_stats->addlist_lock);
 		}
 
+		counter->deleted = true;
 		mod_delayed_work(fc_stats->wq, &fc_stats->work, 0);
 		return;
 	}
