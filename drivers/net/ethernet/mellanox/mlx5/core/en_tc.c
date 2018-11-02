@@ -3437,6 +3437,9 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 	if (unlikely(microflow->nr_flows == MICROFLOW_MAX_FLOWS))
 		goto err;
 
+	if (!cookie)
+		goto err;
+
 	flow = rhashtable_lookup_fast(tc_ht, &cookie, tc_ht_params);
 	if (flow)
 		goto out;

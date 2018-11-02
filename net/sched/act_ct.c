@@ -36,6 +36,19 @@
 static unsigned int conntrack_net_id;
 static struct tc_action_ops act_conntrack_ops;
 
+static void ct_notify_underlying_device(struct sk_buff *skb, struct nf_conn *ct,
+                                        enum ip_conntrack_info ctinfo, struct net *net)
+{
+	struct tc_ct_offload cto = { skb, net, NULL, NULL };
+	if (ct) {
+		cto.zone = nf_ct_zone(ct);
+		cto.tuple = nf_ct_tuple(ct, CTINFO2DIR(ctinfo));
+	}
+
+	/* TODO: do we want tuple as a cookie? */
+	tc_setup_cb_call(NULL, NULL, TC_SETUP_CT, &cto, false);
+}
+
 static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
 			 struct tcf_result *res)
 {
@@ -46,7 +59,7 @@ static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
 	struct nf_conn *tmpl;
 	struct nf_conn *ct;
 	int nh_ofs;
-	int err;
+	int err, ret = 0;
 
 	/* The conntrack module expects to be working at L3. */
 	nh_ofs = skb_network_offset(skb);
@@ -71,22 +84,20 @@ static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
 			      NF_INET_PRE_ROUTING, skb);
 	if (err != NF_ACCEPT) {
 		etrace("tcf_conntrack: nf_conntrack_in failed: %d", err);
+		ret = -1;
 		goto out;
 	}
 
 	ct = nf_ct_get(skb, &ctinfo);
 	if (!ct) {
 		etrace("tcf_conntrack: nf_ct_get failed");
+		ret = -1;
 		goto out;
 	}
 
 	if (ctinfo == IP_CT_ESTABLISHED ||
 	    ctinfo == IP_CT_ESTABLISHED_REPLY) {
-		struct nf_conntrack_zone *zone = nf_ct_zone(ct);
-		struct nf_conntrack_tuple *tuple = nf_ct_tuple(ct, CTINFO2DIR(ctinfo));
-		struct tc_ct_offload cto = { skb, net, tuple, zone };
-		/* TODO: do we want tuple as a cookie? */
-		tc_setup_cb_call(NULL, NULL, TC_SETUP_CT, &cto, false);
+		ct_notify_underlying_device(skb, ct, ctinfo, net);
 	}
 
 	/* TODO: must check this code very carefully; move to another function */
@@ -164,6 +175,9 @@ skip:
 	}
 
 out:
+	if (ret == -1)
+		ct_notify_underlying_device(skb, NULL, IP_CT_UNTRACKED, net);
+
 	skb_push(skb, nh_ofs);
 	skb_postpush_rcsum(skb, skb->data, nh_ofs);
 
