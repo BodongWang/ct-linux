@@ -3121,11 +3121,25 @@ static void microflow_merge_vxlan(struct mlx5e_tc_flow *mflow,
 	mflow->esw_attr->parse_attr->tun_info = flow->esw_attr->parse_attr->tun_info;
 }
 
+static u8 mlx5e_etype_to_ipv(u16 ethertype)
+{
+	if (ethertype == ETH_P_IP)
+		return 4;
+
+	if (ethertype == ETH_P_IPV6)
+		return 6;
+
+	return 0;
+}
+
 static void microflow_merge_tuple(struct mlx5e_tc_flow *mflow,
 				  struct nf_conntrack_tuple *nf_tuple)
 {
 	struct mlx5_flow_spec *spec = &mflow->esw_attr->parse_attr->spec;
 	void *headers_c, *headers_v;
+	int match_ipv;
+	u8 ipv;
+
 	trace("microflow_tuple_to_spec");
 
 	trace("ct: 5tuple: (ethtype: %X) %d, IPs %pI4, %pI4 ports %d, %d",
@@ -3142,16 +3156,26 @@ static void microflow_merge_tuple(struct mlx5e_tc_flow *mflow,
 					 inner_headers);
 		headers_v = MLX5_ADDR_OF(fte_match_param, spec->match_value,
 					 inner_headers);
+		match_ipv = MLX5_CAP_FLOWTABLE_NIC_RX(mflow->priv->mdev,
+					 ft_field_support.inner_ip_version);
 	} else {
 		trace("merge CT: tunnel info does not exist");
 		headers_c = MLX5_ADDR_OF(fte_match_param, spec->match_criteria,
 					 outer_headers);
 		headers_v = MLX5_ADDR_OF(fte_match_param, spec->match_value,
 					 outer_headers);
+		match_ipv = MLX5_CAP_FLOWTABLE_NIC_RX(mflow->priv->mdev,
+					 ft_field_support.outer_ip_version);
 	}
 
-	MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, ethertype);
-	MLX5_SET(fte_match_set_lyr_2_4, headers_v, ethertype, nf_tuple->src.l3num);
+	ipv = mlx5e_etype_to_ipv(ntohs(nf_tuple->src.l3num));
+	if (match_ipv && ipv) {
+		MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, ip_version);
+		MLX5_SET(fte_match_set_lyr_2_4, headers_v, ip_version, ipv);
+	} else {
+		MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, ethertype);
+		MLX5_SET(fte_match_set_lyr_2_4, headers_v, ethertype, nf_tuple->src.l3num);
+	}
 
 	if (nf_tuple->src.l3num == htons(ETH_P_IP)) {
 		memcpy(MLX5_ADDR_OF(fte_match_set_lyr_2_4, headers_v,
