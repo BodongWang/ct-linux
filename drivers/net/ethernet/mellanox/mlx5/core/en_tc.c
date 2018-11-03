@@ -138,6 +138,9 @@ struct mlx5e_microflow {
 	struct nf_conntrack_tuple tuple;
 
 	int nr_flows;
+	/* TODO: rearrange to have a better use of CPU cache.
+	 * Note: cookies are used as the key.
+	*/
 	struct {
 		unsigned long	     cookies[MICROFLOW_MAX_FLOWS];
 		struct mlx5e_tc_flow *flows[MICROFLOW_MAX_FLOWS];
@@ -3022,24 +3025,16 @@ err_free:
 static void microflow_merge_match(struct mlx5e_tc_flow *mflow,
 				  struct mlx5e_tc_flow *flow)
 {
-	char *dst = (char *) &mflow->esw_attr->parse_attr->spec;
-	char *src = (char *) &flow->esw_attr->parse_attr->spec;
+	u32 *dst = (u32 *) &mflow->esw_attr->parse_attr->spec;
+	u32 *src = (u32 *) &flow->esw_attr->parse_attr->spec;
 	int i;
 
 	trace("merging match mflow");
 
-	/* TODO: partial support for masks?
-	 *
-	 *	127.0.0.0/254.0.0.0
-	 *	128.5.1.2/254.255.255.255
-	 *
-	 */
-	for (i = 0; i < sizeof(struct mlx5_flow_spec); i++) {
-		if (*dst == 0 && *src != 0)
-			*dst = *src;
-		dst++;
-		src++;
-	}
+	BUILD_BUG_ON((sizeof(struct mlx5_flow_spec) % sizeof(u32)) != 0);
+
+	for (i = 0; i < sizeof(struct mlx5_flow_spec) / sizeof(u32); i++)
+		*dst++ |= *src++;
 
 	mflow->esw_attr->match_level = max(flow->esw_attr->match_level,
 					   mflow->esw_attr->match_level);
