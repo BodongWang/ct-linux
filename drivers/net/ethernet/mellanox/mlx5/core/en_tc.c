@@ -1003,26 +1003,11 @@ static void mlx5e_tc_del_microflow(struct mlx5e_microflow *microflow)
 	microflow_free(microflow);
 }
 
-static void mlx5e_tc_del_fdb_flow(struct mlx5e_priv *priv,
-				  struct mlx5e_tc_flow *flow)
+static void __mlx5e_tc_del_fdb_flow(struct mlx5e_priv *priv,
+				    struct mlx5e_tc_flow *flow)
 {
 	struct mlx5_eswitch *esw = priv->mdev->priv.eswitch;
 	struct mlx5_esw_flow_attr *attr = flow->esw_attr;
-
-	trace("mlx5e_tc_del_fdb_flow");
-
-	if (!(flow->flags & MLX5E_TC_FLOW_SIMPLE)) {
-		struct mlx5e_microflow_node *mnode, *n;
-
-		list_for_each_entry_safe(mnode, n, &flow->microflow_list, node)
-			mlx5e_tc_del_microflow(mnode->microflow);
-
-		mlx5_fc_destroy(priv->mdev, flow->esw_attr->counter);
-
-		kfree(attr->parse_attr->mod_hdr_actions);
-		kvfree(attr->parse_attr);
-		return;
-	}
 
 	if (flow->flags & MLX5E_TC_FLOW_OFFLOADED) {
 		flow->flags &= ~MLX5E_TC_FLOW_OFFLOADED;
@@ -1040,6 +1025,28 @@ static void mlx5e_tc_del_fdb_flow(struct mlx5e_priv *priv,
 
 	if (attr->action & MLX5_FLOW_CONTEXT_ACTION_MOD_HDR)
 		mlx5e_detach_mod_hdr(priv, flow);
+}
+
+static void mlx5e_tc_del_fdb_flow(struct mlx5e_priv *priv,
+				  struct mlx5e_tc_flow *flow)
+{
+	struct mlx5_esw_flow_attr *attr = flow->esw_attr;
+
+	trace("mlx5e_tc_del_fdb_flow");
+
+	if (flow->flags & MLX5E_TC_FLOW_SIMPLE) {
+		__mlx5e_tc_del_fdb_flow(priv, flow);
+	} else {
+		struct mlx5e_microflow_node *mnode, *n;
+
+		list_for_each_entry_safe(mnode, n, &flow->microflow_list, node)
+			mlx5e_tc_del_microflow(mnode->microflow);
+
+		mlx5_fc_destroy(priv->mdev, flow->esw_attr->counter);
+
+		kfree(attr->parse_attr->mod_hdr_actions);
+		kvfree(attr->parse_attr);
+	}
 }
 
 void mlx5e_tc_encap_flows_add(struct mlx5e_priv *priv,
