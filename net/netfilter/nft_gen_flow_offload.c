@@ -28,16 +28,6 @@
 #include <net/netfilter/nft_gen_flow_offload.h>
 
 
-#ifdef NFT_GEN_FLOW_FUNC_DEBUG
-#define NFT_GEN_FLOW_FUNC_ENTRY()       pr_debug("%s entry", __FUNCTION__)
-#define NFT_GEN_FLOW_FUNC_EXIT()        pr_debug("%s done", __FUNCTION__)
-#else
-#define NFT_GEN_FLOW_FUNC_ENTRY()
-#define NFT_GEN_FLOW_FUNC_EXIT()
-#endif
-
-
-
 static struct nf_gen_flow_offload_table __rcu *_flowtable;
 
 static atomic_t offloaded_flow_cnt;
@@ -52,45 +42,6 @@ module_param(aging_bucket_num, uint, 0644);
 #define MAX_FLOWS_PER_GC_RUN          10000
 #define MAX_GC_RUNS_INTERVAL          (HZ / 1)
 #define MIN_GC_RUNS_INTERVAL          (HZ / 10)
-
-#define SANITY_TEST
-#ifdef SANITY_TEST
-
-static unsigned int sanity_src_ip = 0xc0a86e01;
-module_param(sanity_src_ip, uint, 0644);
-
-static unsigned int sanity_dst_ip = 0xc0a86e8B;
-module_param(sanity_dst_ip, uint, 0644);
-
-static unsigned int sanity_l3prot = NFPROTO_IPV4;
-module_param(sanity_l3prot, uint, 0644);
-
-static unsigned int sanity_l4prot = 16;
-module_param(sanity_l4prot, uint, 0644);
-
-
-static unsigned int sanity_src_port = 1000;
-module_param(sanity_src_port, uint, 0644);
-
-static unsigned int sanity_con_num = 1;
-module_param(sanity_con_num, uint, 0644);
-
-
-enum {
-    OFFLOADED_DEBUG_EN_SANITY_BIT,
-    OFFLOADED_DEBUG_EN_SANITY = (1 << OFFLOADED_DEBUG_EN_SANITY_BIT),
-
-    OFFLOADED_DEBUG_EN_SANITY_STATS_BIT = 1,
-    OFFLOADED_DEBUG_EN_SANITY_STATS = (1 << OFFLOADED_DEBUG_EN_SANITY_STATS_BIT),
-
-};
-
-
-static unsigned int sanity_flags = 0;
-module_param(sanity_flags, uint, 0644);
-
-#endif
-
 
 #define PORTING_FLOW_TABLE
 
@@ -815,7 +766,7 @@ static int nf_gen_flow_offload_gc_step(struct flow_gc_work *gc_work, int target_
         flow = _get_one_from_teardowns(gc_work);
         if (flow) {
             nf_gen_flow_offload_del(flowtable, flow);
-            proced_flows++;
+           // proced_flows++;
             continue;
         }
 
@@ -854,7 +805,7 @@ static void nf_gen_flow_offload_work_gc(struct work_struct *work)
     struct nf_gen_flow_offload_table *flow_table;
     int target_flows = MAX_FLOWS_PER_GC_RUN;
     int next_run;
-    
+
     flow_table = container_of(work, struct nf_gen_flow_offload_table, gc_work.work.work);
     next_run = nf_gen_flow_offload_gc_step(&flow_table->gc_work, target_flows);
     queue_delayed_work(flow_table->flow_wq, &flow_table->gc_work.work, next_run);
@@ -901,7 +852,7 @@ static int nf_gen_flow_offload_init_buckets(struct flow_gc_work *gc_work,
         INIT_LIST_HEAD(&bucket->head);
     }    
 
-    INIT_DEFERRABLE_WORK(&gc_work->work, nf_gen_flow_offload_work_gc);
+    INIT_DELAYED_WORK(&gc_work->work, nf_gen_flow_offload_work_gc);
 
     return 0;
 }
@@ -1271,8 +1222,6 @@ int nft_gen_flow_offload_remove(const struct net *net,
     int ret;
     struct flow_offload_dep_ops * ops;
 
-    NFT_GEN_FLOW_FUNC_ENTRY();
-
     if (rcu_access_pointer(flow_dep_ops) == NULL)
         return -EPERM;
 
@@ -1301,8 +1250,6 @@ int nft_gen_flow_offload_remove(const struct net *net,
     } else {
         ret = -ENOENT;
     }
-
-    NFT_GEN_FLOW_FUNC_EXIT();
 
     return ret;
 }
@@ -1352,69 +1299,14 @@ nft_gen_flow_offload_init(const struct net *net)
 {
     struct nf_gen_flow_offload_table *flowtable;
 
-    NFT_GEN_FLOW_FUNC_ENTRY();
-
     flowtable = kzalloc(sizeof(*flowtable), GFP_KERNEL);
 
     nf_gen_flow_offload_table_init(flowtable);
 
     rcu_assign_pointer(_flowtable, flowtable);
 
-    NFT_GEN_FLOW_FUNC_EXIT();
-
     return 0;
 }
-
-#ifdef SANITY_TEST
-
-static int _dummy_dep_add(void * ptr, struct list_head *head)
-{
-    struct list_head * node = kzalloc(sizeof(*node), GFP_KERNEL);
-
-    if (!node)
-        return -1;
-
-    INIT_LIST_HEAD(node);
-    list_add_tail(node, head);
-    return 0;
-}
-
-static void _dummy_dep_del(void * ptr, struct list_head *head)
-{
-}
-
-static int _dummy_dep_destroy(struct list_head *head)
-{
-    struct list_head *n, *m;
-
-    pr_debug("_dummy_dep_destroy");
-
-    list_for_each_safe(n, m, head) {
-        list_del(n);
-        kfree(n);
-    }
-
-    return 0;
-}
-
-static void _dummy_get_stat(struct nf_gen_flow_ct_stat *stats, struct list_head *head)
-{
-    pr_debug("_dummy_get_stat");
-    if (sanity_flags & OFFLOADED_DEBUG_EN_SANITY_STATS)
-        stats->last_used = jiffies;
-}
-
-
-static struct flow_offload_dep_ops dummy_ops = {
-    .add        = _dummy_dep_add,
-    .remove     = _dummy_dep_del,
-    .destroy    = _dummy_dep_destroy,
-    .get_stats  = _dummy_get_stat
-};
-
-
-#endif
-
 
 static int _flow_proc_show(struct seq_file *m, void *v)
 {
@@ -1503,44 +1395,6 @@ static int __init nft_gen_flow_offload_module_init(void)
 
     nft_gen_flow_offload_init(&init_net);
 
-#ifdef SANITY_TEST
-    if (sanity_flags & OFFLOADED_DEBUG_EN_SANITY) {
-        struct nf_conntrack_tuple test_tuple;
-        struct nf_conntrack_zone test_zone = {1, 0, NF_CT_DEFAULT_ZONE_DIR};
-        int conn, port;
-        u64 ts;
-
-        nft_gen_flow_offload_dep_ops_register(&dummy_ops);
-
-        ts = jiffies; 
-        port = sanity_src_port;
-        for (conn=0; conn < sanity_con_num; conn++) {
-            memset(&test_tuple, 0, sizeof(test_tuple));
-
-            test_tuple.src.u3.ip = htonl(sanity_src_ip);
-            test_tuple.src.u.tcp.port = htons(port);
-            test_tuple.src.l3num = sanity_l3prot;
-
-            test_tuple.dst.u3.ip = htonl(sanity_dst_ip);
-            test_tuple.dst.u.tcp.port = htons(port);
-            test_tuple.dst.protonum = sanity_l4prot;
-            test_tuple.dst.dir = NF_CT_ZONE_DIR_ORIG;
-
-            nft_gen_flow_offload_add(&init_net, &test_zone, &test_tuple, (void*)0xdeadbeef);
-
-            if (port++ >= 61000) {
-                port = sanity_src_port;
-                test_zone.id++;
-            }
-        }
-
-        ts = jiffies - ts;
-        printk("TEST: %d connections added in jiffies(%llu)", conn, ts);
-
-        //nft_gen_flow_offload_destroy(net, &test_zone, &test_tuple);
-    }
-#endif
-
     nft_gen_flow_offload_proc_init();
 
     return 0;
@@ -1553,12 +1407,6 @@ static void __exit nft_gen_flow_offload_module_exit(void)
     struct nf_gen_flow_offload_table * flowtable;
 
     nft_gen_flow_offload_proc_exit();
-
-#ifdef SANITY_TEST
-    if (sanity_flags & OFFLOADED_DEBUG_EN_SANITY) {
-        nft_gen_flow_offload_dep_ops_unregister(&dummy_ops);
-    }
-#endif
 
     flowtable = rcu_dereference(_flowtable);
     if (flowtable != NULL) {
