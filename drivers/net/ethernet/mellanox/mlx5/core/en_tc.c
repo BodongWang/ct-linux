@@ -1049,8 +1049,19 @@ void mlx5e_tc_encap_flows_add(struct mlx5e_priv *priv,
 	mlx5e_rep_queue_neigh_stats_work(priv);
 
 	list_for_each_entry(flow, &e->flows, encap) {
+		struct mlx5_fc *counter;
+
 		esw_attr = flow->esw_attr;
 		esw_attr->encap_id = e->encap_id;
+		if (esw_attr->action & MLX5_FLOW_CONTEXT_ACTION_COUNT){
+			counter = mlx5_fc_alloc(GFP_KERNEL);
+			if (IS_ERR(counter)){
+				mlx5_core_warn(priv->mdev, "Failed to alloc counter when update cached encapsulation flow.");
+				continue;
+			}
+		}
+                
+		flow->esw_attr->counter=counter;
 		flow->rule[0] = mlx5_eswitch_add_offloaded_rule(esw, &esw_attr->parse_attr->spec, esw_attr);
 		if (IS_ERR(flow->rule[0])) {
 			err = PTR_ERR(flow->rule[0]);
@@ -3361,7 +3372,7 @@ static int __microflow_merge(struct mlx5e_microflow *microflow)
 	mflow->esw_attr->action = mflow->esw_attr->action & ~MLX5_FLOW_CONTEXT_ACTION_CT;
 
 	counter = mlx5_fc_alloc(GFP_KERNEL);
-	if (!counter)
+	if (IS_ERR(counter))
 		goto err;
 	mflow->esw_attr->counter = counter;
 
@@ -3452,7 +3463,7 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 		      MLX5E_TC_FLOW_TUPLE;
 
 	flow->esw_attr->counter = mlx5_fc_alloc(GFP_ATOMIC);
-	if (!flow->esw_attr->counter)
+	if (IS_ERR(flow->esw_attr->counter))
 		goto err_free;
 
 	/* TODO: temp */
