@@ -1795,7 +1795,7 @@ int tc_setup_cb_call(struct tcf_block *block, struct tcf_exts *exts,
 		return ret;
 
 egdev_all:
-	return tc_setup_cb_egdev_call_all(type, type_data);
+	return tc_setup_cb_egdev_all_call(type, type_data);
 }
 EXPORT_SYMBOL(tc_setup_cb_call);
 

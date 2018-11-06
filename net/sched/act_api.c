@@ -1333,7 +1333,6 @@ static unsigned int tcf_action_net_id;
 
 struct tcf_action_egdev_cb {
 	struct list_head list;
-	struct list_head alllist;
 	tc_setup_cb_t *cb;
 	void *cb_priv;
 };
@@ -1433,7 +1432,6 @@ static int tcf_action_egdev_cb_add(struct tcf_action_egdev *egdev,
 				   tc_setup_cb_t *cb, void *cb_priv)
 {
 	struct tcf_action_egdev_cb *egdev_cb;
-	struct tcf_action_net *tan;
 
 	egdev_cb = tcf_action_egdev_cb_lookup(egdev, cb, cb_priv);
 	if (WARN_ON(egdev_cb))
@@ -1444,9 +1442,6 @@ static int tcf_action_egdev_cb_add(struct tcf_action_egdev *egdev,
 	egdev_cb->cb = cb;
 	egdev_cb->cb_priv = cb_priv;
 	list_add(&egdev_cb->list, &egdev->cb_list);
-
-	tan = net_generic(dev_net(egdev->dev), tcf_action_net_id);
-	list_add(&egdev_cb->alllist, &tan->egdev_list);
 
 	return 0;
 }
@@ -1460,7 +1455,6 @@ static void tcf_action_egdev_cb_del(struct tcf_action_egdev *egdev,
 	if (WARN_ON(!egdev_cb))
 		return;
 	list_del(&egdev_cb->list);
-	list_del(&egdev_cb->alllist);
 	kfree(egdev_cb);
 }
 
@@ -1493,6 +1487,44 @@ int tc_setup_cb_egdev_register(const struct net_device *dev,
 }
 EXPORT_SYMBOL_GPL(tc_setup_cb_egdev_register);
 
+int tc_setup_cb_egdev_all_register(const struct net_device *dev,
+				   tc_setup_cb_t *cb, void *cb_priv)
+{
+	struct tcf_action_egdev_cb *egdev_cb;
+	struct tcf_action_net *tan;
+
+	rtnl_lock();
+	egdev_cb = kzalloc(sizeof(*egdev_cb), GFP_KERNEL);
+	if (!egdev_cb)
+		return -ENOMEM;
+	egdev_cb->cb = cb;
+	egdev_cb->cb_priv = cb_priv;
+	tan = net_generic(dev_net(dev), tcf_action_net_id);
+	list_add(&egdev_cb->list, &tan->egdev_list);
+	rtnl_unlock();
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tc_setup_cb_egdev_all_register);
+
+void tc_setup_cb_egdev_all_unregister(const struct net_device *dev,
+				      tc_setup_cb_t *cb, void *cb_priv)
+{
+	struct tcf_action_egdev_cb *egdev_cb;
+	struct tcf_action_net *tan;
+
+	rtnl_lock();
+	tan = net_generic(dev_net(dev), tcf_action_net_id);
+	list_for_each_entry(egdev_cb, &tan->egdev_list, list) {
+		if (egdev_cb->cb == cb && egdev_cb->cb_priv == cb_priv) {
+			list_del(&egdev_cb->list);
+			kfree(egdev_cb);
+			break;
+		}
+	}
+	rtnl_unlock();
+}
+EXPORT_SYMBOL_GPL(tc_setup_cb_egdev_all_unregister);
+
 static void __tc_setup_cb_egdev_unregister(const struct net_device *dev,
 					   tc_setup_cb_t *cb, void *cb_priv)
 {
@@ -1524,20 +1556,20 @@ int tc_setup_cb_egdev_call(const struct net_device *dev,
 }
 EXPORT_SYMBOL_GPL(tc_setup_cb_egdev_call);
 
-int tc_setup_cb_egdev_call_all(enum tc_setup_type type, void *type_data)
+int tc_setup_cb_egdev_all_call(enum tc_setup_type type, void *type_data)
 {
 	struct tcf_action_net *tan = net_generic(&init_net, tcf_action_net_id);
 	struct tcf_action_egdev_cb *egdev_cb;
 	int err;
 
-	list_for_each_entry(egdev_cb, &tan->egdev_list, alllist) {
+	list_for_each_entry(egdev_cb, &tan->egdev_list, list) {
 		err = egdev_cb->cb(type, type_data, egdev_cb->cb_priv);
 		if (!err)
 			return 1;
 	}
 	return 0;
 }
-EXPORT_SYMBOL_GPL(tc_setup_cb_egdev_call_all);
+EXPORT_SYMBOL_GPL(tc_setup_cb_egdev_all_call);
 
 static __net_init int tcf_action_net_init(struct net *net)
 {
