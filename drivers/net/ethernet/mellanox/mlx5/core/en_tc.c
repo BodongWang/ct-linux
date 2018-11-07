@@ -981,8 +981,11 @@ static void mlx5e_tc_del_microflow(struct mlx5e_microflow *microflow)
 
 	/* Detach from all parent flows */
 	for (i=0; i<microflow->nr_flows; i++)
+	{
 		list_del(&microflow->mnodes[i].node);
+		printk("node addr %lx, seq %d", (unsigned long)&microflow->mnodes[i].node, i);
 
+	}
 	mlx5e_tc_del_fdb_flow(microflow->priv, microflow->flow);
 	kfree(microflow->flow);
 
@@ -3283,6 +3286,7 @@ static void microflow_attach(struct mlx5e_microflow *microflow)
 
 		microflow->mnodes[i].microflow = microflow;
 		list_add(&microflow->mnodes[i].node, &flow->microflow_list);
+		printk("node addr %lx, seq %d, list addr %lx \n", (unsigned long)&microflow->mnodes[i].node, i, (unsigned long)&flow->microflow_list);
 	}
 }
 
@@ -3587,7 +3591,7 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 		microflow_write(microflow);
 	}
 
-	if (microflow->cookie != (u64) skb)
+	if ((microflow->cookie != (u64) skb)||(0 == mf->chain_index))
 		microflow_init(microflow, priv, skb);
 
 	if (microflow->nr_flows == -1)

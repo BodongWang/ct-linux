@@ -204,6 +204,7 @@ static void fl_notify_underlying_device(struct sk_buff *skb, const struct tcf_pr
 	/* TODO: can we do it in the driver? need RCU support */
 	atrace(nr_actions > 0);
 	mf.last_flow = !is_tcf_gact_goto_chain(actions[nr_actions-1]);
+	mf.chain_index = tp->chain->index;
 
 	/* TODO: should be replaced by something else TBD */
 	tc_setup_cb_call(block, NULL, TC_SETUP_MICROFLOW, &mf, false);
@@ -248,7 +249,6 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 		if (f && !tc_skip_sw(f->flags)) {
 			trace("calling notify_underlying_device with f: %px", f);
 			fl_notify_underlying_device(skb, tp, f);
-
 			*res = f->res;
 			return tcf_exts_exec(skb, &f->exts, res);
 		}

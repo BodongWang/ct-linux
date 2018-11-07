@@ -801,6 +801,7 @@ struct tc_microflow_offload {
 	struct sk_buff *skb;
 	unsigned long cookie;
 	bool last_flow;
+	uint32_t chain_index;
 };
 
 struct tc_ct_offload {
