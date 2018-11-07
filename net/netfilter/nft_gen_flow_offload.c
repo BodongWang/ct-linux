@@ -372,6 +372,10 @@ static int nf_gen_flow_offload_add(struct nf_gen_flow_offload_table *flow_table,
     ret = rhashtable_insert_fast(&flow_table->rhashtable,
                &flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].node,
                nf_gen_flow_offload_rhash_params);
+    if (ret)
+        rhashtable_remove_fast(&flow_table->rhashtable,
+                       &flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].node,
+                       nf_gen_flow_offload_rhash_params);        
 
     return ret;
 }
