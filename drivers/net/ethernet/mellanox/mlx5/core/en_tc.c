@@ -1049,7 +1049,7 @@ void mlx5e_tc_encap_flows_add(struct mlx5e_priv *priv,
 	mlx5e_rep_queue_neigh_stats_work(priv);
 
 	list_for_each_entry(flow, &e->flows, encap) {
-		struct mlx5_fc *counter;
+		struct mlx5_fc *counter = NULL;
 
 		esw_attr = flow->esw_attr;
 		esw_attr->encap_id = e->encap_id;
@@ -1061,7 +1061,7 @@ void mlx5e_tc_encap_flows_add(struct mlx5e_priv *priv,
 			}
 		}
                 
-		flow->esw_attr->counter=counter;
+		flow->esw_attr->counter = counter;
 		flow->rule[0] = mlx5_eswitch_add_offloaded_rule(esw, &esw_attr->parse_attr->spec, esw_attr);
 		if (IS_ERR(flow->rule[0])) {
 			err = PTR_ERR(flow->rule[0]);
