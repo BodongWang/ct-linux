@@ -1493,12 +1493,13 @@ int tc_setup_cb_egdev_all_register(const struct net_device *dev,
 	struct tcf_action_egdev_cb *egdev_cb;
 	struct tcf_action_net *tan;
 
-	rtnl_lock();
 	egdev_cb = kzalloc(sizeof(*egdev_cb), GFP_KERNEL);
 	if (!egdev_cb)
 		return -ENOMEM;
 	egdev_cb->cb = cb;
 	egdev_cb->cb_priv = cb_priv;
+
+	rtnl_lock();
 	tan = net_generic(dev_net(dev), tcf_action_net_id);
 	list_add(&egdev_cb->list, &tan->egdev_list);
 	rtnl_unlock();
