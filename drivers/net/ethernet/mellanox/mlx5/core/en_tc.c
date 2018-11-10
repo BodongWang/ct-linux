@@ -118,6 +118,12 @@ struct mlx5e_tc_flow {
 
 struct mlx5e_microflow;
 
+DEFINE_PER_CPU(struct mlx5e_microflow *, current_microflow) = NULL;
+
+/* TOOD: we should init this variable only once, rather than per PF? */
+/* we should have a microflow init/cleanup functions */
+static struct kmem_cache *microflow_cache; // __ro_after_init; crashes??
+
 struct mlx5e_microflow_node {
 	struct list_head node;
 	struct mlx5e_microflow *microflow;
@@ -146,6 +152,13 @@ struct mlx5e_microflow {
 	struct mlx5_fc *dummy_counters[MICROFLOW_MAX_FLOWS];
 };
 
+static const struct rhashtable_params mf_ht_params = {
+	.head_offset = offsetof(struct mlx5e_microflow, node),
+	.key_offset = offsetof(struct mlx5e_microflow, path.cookies),
+	.key_len = sizeof(((struct mlx5e_microflow *)0)->path.cookies),
+	.automatic_shrinking = true,
+};
+
 struct mlx5_ct_tuple {
 	struct net *net;
 	struct nf_conntrack_tuple tuple;
@@ -172,16 +185,6 @@ struct mlx5e_tc_flow_parse_attr {
 enum {
 	MLX5_HEADER_TYPE_VXLAN = 0x0,
 	MLX5_HEADER_TYPE_NVGRE = 0x1,
-};
-
-/* TODO: should be part of a structure, rather than global */
-struct rhashtable mf_ht;
-
-static const struct rhashtable_params mf_ht_params = {
-	.head_offset = offsetof(struct mlx5e_microflow, node),
-	.key_offset = offsetof(struct mlx5e_microflow, path.cookies),
-	.key_len = sizeof(((struct mlx5e_microflow *)0)->path.cookies),
-	.automatic_shrinking = true,
 };
 
 #define MLX5E_TC_TABLE_NUM_GROUPS 4
@@ -981,6 +984,15 @@ err_attach_encap:
 	return rule;
 }
 
+static struct rhashtable *get_mf_ht(struct mlx5e_priv *priv)
+{
+	struct mlx5_eswitch *esw = priv->mdev->priv.eswitch;
+	struct mlx5e_rep_priv *uplink_rpriv;
+
+	uplink_rpriv = mlx5_eswitch_get_uplink_priv(esw, REP_ETH);
+	return &uplink_rpriv->mf_ht;
+}
+
 static void mlx5e_tc_del_fdb_flow(struct mlx5e_priv *priv,
 				  struct mlx5e_tc_flow *flow);
 
@@ -988,6 +1000,7 @@ static void microflow_free(struct mlx5e_microflow *microflow);
 
 static void mlx5e_tc_del_microflow(struct mlx5e_microflow *microflow)
 {
+	struct rhashtable *mf_ht = get_mf_ht(microflow->priv);
 	int i;
 
 	trace("mlx5e_tc_del_microflow: microflow->nr_flows: %d", microflow->nr_flows);
@@ -999,7 +1012,7 @@ static void mlx5e_tc_del_microflow(struct mlx5e_microflow *microflow)
 	mlx5e_tc_del_fdb_flow(microflow->priv, microflow->flow);
 	kfree(microflow->flow);
 
-	rhashtable_remove_fast(&mf_ht, &microflow->node, mf_ht_params);
+	rhashtable_remove_fast(mf_ht, &microflow->node, mf_ht_params);
 	microflow_free(microflow);
 }
 
@@ -3237,10 +3250,6 @@ static void microflow_merge_tuple(struct mlx5e_tc_flow *mflow,
 	}
 }
 
-DEFINE_PER_CPU(struct mlx5e_microflow *, current_microflow) = NULL;
-
-static struct kmem_cache *microflow_cache; // __ro_after_init; crashes??
-
 static struct mlx5e_microflow *microflow_alloc(void)
 {
 	struct mlx5e_microflow *microflow;
@@ -3408,6 +3417,7 @@ err:
 static int __microflow_merge(struct mlx5e_microflow *microflow)
 {
 	struct mlx5e_priv *priv = microflow->priv;
+	struct rhashtable *mf_ht = get_mf_ht(priv);
 	struct mlx5e_rep_priv *rpriv = priv->ppriv;
 	struct mlx5e_tc_flow *mflow;
 	struct mlx5e_tc_flow *flow;
@@ -3491,7 +3501,7 @@ err:
 	kvfree(mflow->esw_attr->parse_attr);
 	kfree(mflow);
 err_flow:
-	rhashtable_remove_fast(&mf_ht, &microflow->node, mf_ht_params);
+	rhashtable_remove_fast(mf_ht, &microflow->node, mf_ht_params);
 	microflow_cleanup(microflow);
 	microflow_free(microflow);
 	return -1;
@@ -3650,6 +3660,7 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 			      struct tc_microflow_offload *mf)
 {
 	struct rhashtable *tc_ht = get_tc_ht(priv);
+	struct rhashtable *mf_ht = get_mf_ht(priv);
 	struct sk_buff *skb = mf->skb;
 	struct mlx5e_tc_flow *flow;
 	struct mlx5e_microflow *microflow = NULL;
@@ -3696,7 +3707,7 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	if (!mf->last_flow)
 		return 0;
 
-	err = rhashtable_lookup_insert_fast(&mf_ht, &microflow->node, mf_ht_params);
+	err = rhashtable_lookup_insert_fast(mf_ht, &microflow->node, mf_ht_params);
 	if (err) {
 		ntrace("rhashtable_lookup_insert_fast: error: %d (prevent duplicated microflows)", err);
 		goto err;
@@ -3711,7 +3722,7 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	return 0;
 
 err_work:
-	rhashtable_remove_fast(&mf_ht, &microflow->node, mf_ht_params);
+	rhashtable_remove_fast(mf_ht, &microflow->node, mf_ht_params);
 err:
 	microflow_cleanup(microflow);
 	return -1;
@@ -3869,8 +3880,10 @@ struct flow_offload_dep_ops ct_offload_ops = {
 	.destroy = ct_flow_offload_destroy
 };
 
-int mlx5e_tc_esw_init(struct rhashtable *tc_ht)
+int mlx5e_tc_esw_init(struct mlx5e_priv *priv)
 {
+	struct rhashtable *tc_ht = get_tc_ht(priv);
+	struct rhashtable *mf_ht = get_mf_ht(priv);
 	int err;
 
 	microflow_cache = kmem_cache_create("microflow_cache",
@@ -3884,7 +3897,7 @@ int mlx5e_tc_esw_init(struct rhashtable *tc_ht)
 	if (err)
 		goto err_tc_ht;
 
-	err = rhashtable_init(&mf_ht, &mf_ht_params);
+	err = rhashtable_init(mf_ht, &mf_ht_params);
 	if (err)
 		goto err_mf_ht;
 
@@ -3902,13 +3915,14 @@ err_tc_ht:
 void mlx5e_tc_esw_cleanup(struct mlx5e_priv *priv)
 {
 	struct rhashtable *tc_ht = get_tc_ht(priv);
+	struct rhashtable *mf_ht = get_mf_ht(priv);
 	int cpu;
 
 	nft_gen_flow_offload_dep_ops_unregister(&ct_offload_ops);
 	flush_workqueue(priv->wq);
 
 	rhashtable_free_and_destroy(tc_ht, _mlx5e_tc_del_flow, NULL);
-	rhashtable_free_and_destroy(&mf_ht, NULL, NULL);
+	rhashtable_free_and_destroy(mf_ht, NULL, NULL);
 
 	for_each_possible_cpu(cpu)
 		microflow_free(per_cpu(current_microflow, cpu));

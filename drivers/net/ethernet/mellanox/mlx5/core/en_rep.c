@@ -1265,7 +1265,7 @@ mlx5e_nic_rep_load(struct mlx5_core_dev *dev, struct mlx5_eswitch_rep *rep)
 		goto err_remove_sqs;
 
 	/* init shared tc flow table */
-	err = mlx5e_tc_esw_init(&rpriv->tc_ht);
+	err = mlx5e_tc_esw_init(priv);
 	if (err)
 		goto  err_neigh_cleanup;
 
