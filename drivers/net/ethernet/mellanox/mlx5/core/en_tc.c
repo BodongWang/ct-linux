@@ -123,6 +123,7 @@ DEFINE_PER_CPU(struct mlx5e_microflow *, current_microflow) = NULL;
 /* TOOD: we should init this variable only once, rather than per PF? */
 /* we should have a microflow init/cleanup functions */
 static struct kmem_cache *microflow_cache; // __ro_after_init; crashes??
+struct workqueue_struct *microflow_wq;
 
 struct mlx5e_microflow_node {
 	struct list_head node;
@@ -3519,7 +3520,7 @@ void microflow_merge(struct work_struct *work)
 static int microflow_merge_work(struct mlx5e_microflow *microflow)
 {
 	INIT_WORK(&microflow->work, microflow_merge);
-	if (queue_work(microflow->priv->wq, &microflow->work))
+	if (queue_work(microflow_wq, &microflow->work))
 		return 0;
 
 	return -1;
@@ -3868,7 +3869,7 @@ int ct_flow_offload_destroy(struct list_head *head)
 
 		INIT_WORK(&flow->work, ct_flow_offload_destroy_work);
 		/* TODO: might fail? */
-		queue_work(flow->priv->wq, &flow->work);
+		queue_work(microflow_wq, &flow->work);
 	}
 
 	return 0;
@@ -3901,10 +3902,16 @@ int mlx5e_tc_esw_init(struct mlx5e_priv *priv)
 	if (err)
 		goto err_mf_ht;
 
+	microflow_wq = create_workqueue("microflow");
+	if (!microflow_wq)
+		goto err_wq;
+
 	nft_gen_flow_offload_dep_ops_register(&ct_offload_ops);
 
 	return 0;
 
+err_wq:
+	rhashtable_free_and_destroy(mf_ht, NULL, NULL);
 err_mf_ht:
 	rhashtable_free_and_destroy(tc_ht, NULL, NULL);
 err_tc_ht:
@@ -3919,7 +3926,7 @@ void mlx5e_tc_esw_cleanup(struct mlx5e_priv *priv)
 	int cpu;
 
 	nft_gen_flow_offload_dep_ops_unregister(&ct_offload_ops);
-	flush_workqueue(priv->wq);
+	flush_workqueue(microflow_wq);
 
 	rhashtable_free_and_destroy(tc_ht, _mlx5e_tc_del_flow, NULL);
 	rhashtable_free_and_destroy(mf_ht, NULL, NULL);
