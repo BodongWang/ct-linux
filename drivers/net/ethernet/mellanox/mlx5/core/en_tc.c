@@ -3272,6 +3272,17 @@ static void microflow_init(struct mlx5e_microflow *microflow,
 	memset(microflow->path.cookies, 0, sizeof(microflow->path.cookies));
 }
 
+static void microflow_dettach(struct mlx5e_microflow *microflow)
+{
+	int i;
+
+	/* remove self from all parent flows */
+	for (i=0; i<microflow->nr_flows; i++) {
+		if (!list_empty_careful(&microflow->mnodes[i].node))
+			list_del(&microflow->mnodes[i].node);
+	}
+}
+
 static void microflow_attach(struct mlx5e_microflow *microflow)
 {
 	struct mlx5e_tc_flow *flow;
@@ -3382,10 +3393,17 @@ static int __microflow_merge(struct mlx5e_microflow *microflow)
 	if (err && err != -EAGAIN)
 		goto err;
 
+	/* Process EAGAIN as other errors before one solution is ready */
+	if (err == EAGAIN) {
+		etrace(" mflow: %px, hit EAGAIN in configure_fdb, mflow->rule[0]=%px", mflow, mflow->rule[0]);
+		goto err;
+	}
+
 	microflow_attach(microflow);
 
 	err = microflow_register_ct_flow(microflow);
 	if (err) {
+		microflow_dettach(microflow);
 		mlx5e_tc_del_flow(priv, mflow);
 		kfree(mflow);
 		goto err_flow;
