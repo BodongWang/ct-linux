@@ -3441,28 +3441,13 @@ static int microflow_merge_work(struct mlx5e_microflow *microflow)
 	return -1;
 }
 
-/*
- return 1: FOUND.
- return 0: NOT FOUND.
- */
-static inline int microflow_lookup_cookie(unsigned long *cookies_array, int num, unsigned long cookie)
-{
-	int i;
-	for (i = 0;i < num; i++)
-	{
-		if (cookies_array[i] == cookie) 
-			return 1;
-	}
-	return 0;
-}
-
 int mlx5e_configure_ct(struct mlx5e_priv *priv,
 		       struct tc_ct_offload *cto)
 {
 	struct mlx5e_microflow *microflow;
 	struct sk_buff *skb = cto->skb;
 	struct mlx5e_tc_flow *flow;
-	int err, found = 0;
+	int err;
 	struct rhashtable *tc_ht = get_tc_ht(priv);
 	struct nf_conntrack_tuple *tuple = cto->tuple;
 	unsigned long cookie = (unsigned long) tuple;
@@ -3520,12 +3505,7 @@ out:
 	/* NOTE: this 5-tuple (dummy) flow won't get freed by anyone, only once the driver unloads,
 	 * or by the flow_offload module.
 	 */
-
-	found = microflow_lookup_cookie(microflow->path.cookies, microflow->nr_flows, cookie);
-	/* Avoid duplication, eg same zone. */
-	if (!found)
-		microflow->path.cookies[microflow->nr_flows++] = cookie;
-
+	microflow->path.cookies[microflow->nr_flows++] = cookie;
 	return 0;
 
 err_free:
