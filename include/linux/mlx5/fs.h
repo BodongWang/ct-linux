@@ -184,8 +184,6 @@ int mlx5_modify_rule_destination(struct mlx5_flow_handle *handler,
 
 struct mlx5_fc *mlx5_flow_rule_counter(struct mlx5_flow_handle *handler);
 struct mlx5_fc *mlx5_fc_create(struct mlx5_core_dev *dev, bool aging);
-struct mlx5_fc *mlx5_fc_alloc(gfp_t flags);
-int mlx5_fc_attach(struct mlx5_core_dev *dev, struct mlx5_fc *counter, bool aging);
 void mlx5_fc_link_dummies(struct mlx5_fc *counter, struct mlx5_fc **dummies, int nf_dummies);
 void mlx5_fc_destroy(struct mlx5_core_dev *dev, struct mlx5_fc *counter);
 void mlx5_fc_query_cached(struct mlx5_fc *counter,

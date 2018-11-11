@@ -100,12 +100,13 @@ struct mlx5e_tc_flow {
 	struct list_head	encap;   /* flows sharing the same encap ID */
 	struct list_head	mod_hdr; /* flows sharing the same mod hdr ID */
 	struct list_head	hairpin; /* flows sharing the same hairpin */
+	struct mlx5_fc		*dummy_counter;
 
 	struct list_head        microflow_list;
 
 	struct mlx5_ct_tuple    *ct_tuple;
 
-
+	/* TODO: temp */
 	struct list_head ct;
 	struct work_struct work;
 
@@ -1056,7 +1057,7 @@ static void mlx5e_tc_del_fdb_flow(struct mlx5e_priv *priv,
 		list_for_each_entry_safe(mnode, n, &flow->microflow_list, node)
 			mlx5e_tc_del_microflow(mnode->microflow);
 
-		mlx5_fc_destroy(priv->mdev, flow->esw_attr->counter);
+		mlx5_fc_destroy(priv->mdev, flow->dummy_counter);
 
 		kfree(attr->parse_attr->mod_hdr_actions);
 		kvfree(attr->parse_attr);
@@ -1083,19 +1084,8 @@ void mlx5e_tc_encap_flows_add(struct mlx5e_priv *priv,
 	mlx5e_rep_queue_neigh_stats_work(priv);
 
 	list_for_each_entry(flow, &e->flows, encap) {
-		struct mlx5_fc *counter = NULL;
-
 		esw_attr = flow->esw_attr;
 		esw_attr->encap_id = e->encap_id;
-		if (esw_attr->action & MLX5_FLOW_CONTEXT_ACTION_COUNT){
-			counter = mlx5_fc_alloc(GFP_KERNEL);
-			if (IS_ERR(counter)){
-				mlx5_core_warn(priv->mdev, "Failed to alloc counter when update cached encapsulation flow.");
-				continue;
-			}
-		}
-                
-		flow->esw_attr->counter = counter;
 		flow->rule[0] = mlx5_eswitch_add_offloaded_rule(esw, &esw_attr->parse_attr->spec, esw_attr);
 		if (IS_ERR(flow->rule[0])) {
 			err = PTR_ERR(flow->rule[0]);
@@ -2939,7 +2929,6 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 	struct rhashtable *tc_ht = get_tc_ht(priv);
 	u32 chain_index = f->common.chain_index;
 	struct mlx5e_tc_flow *flow;
-	struct mlx5_fc *counter;
 	int attr_size, err = 0;
 	u8 flow_flags = 0;
 
@@ -2987,13 +2976,6 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 		/* TOOD: handle NIC flow properly */
 		flow->rule[0] = mlx5e_tc_add_nic_flow(priv, parse_attr, flow);
 	}
-
-	counter = mlx5_fc_alloc(GFP_KERNEL);
-	if (IS_ERR(counter)) {
-		err = PTR_ERR(counter);
-		goto err_free;
-	}
-	flow->esw_attr->counter = counter;
 
 	trace("is_flow_simple(flow): %d, chain_index: %d", is_flow_simple(flow, chain_index), chain_index);
 	if (is_flow_simple(flow, chain_index)) {
@@ -3251,6 +3233,25 @@ static void microflow_merge_tuple(struct mlx5e_tc_flow *mflow,
 	}
 }
 
+struct mlx5_fc *microflow_get_dummy_counter(struct mlx5e_tc_flow *flow)
+{
+	struct mlx5_fc *counter;
+
+	if (flow->dummy_counter)
+		return flow->dummy_counter;
+
+	counter = kzalloc(sizeof(*counter), GFP_KERNEL);
+	if (!counter)
+		return NULL;
+
+	flow->dummy_counter = counter;
+
+	counter->dummy = true;
+	counter->aging = true;
+
+	return counter;
+}
+
 static struct mlx5e_microflow *microflow_alloc(void)
 {
 	struct mlx5e_microflow *microflow;
@@ -3333,7 +3334,7 @@ static void microflow_cleanup(struct mlx5e_microflow *microflow)
 		rhashtable_remove_fast(tc_ht, &flow->node, tc_ht_params);
 
 		kfree(flow->ct_tuple);
-		kfree(flow->esw_attr->counter);
+		kfree(flow->dummy_counter);
 		kvfree(flow->esw_attr->parse_attr);
 		kfree(flow);
 	}
@@ -3392,7 +3393,7 @@ static int microflow_resolve_path_flows(struct mlx5e_microflow *microflow)
 				struct mlx5e_tc_flow *flow = microflow->path.flows[i];
 
 				kfree(flow->ct_tuple);
-				kfree(flow->esw_attr->counter);
+				/* kfree(flow->dummy_counter); */
 				kvfree(flow->esw_attr->parse_attr);
 				kfree(flow);
 			}
@@ -3458,20 +3459,17 @@ static int __microflow_merge(struct mlx5e_microflow *microflow)
 		microflow_merge_vxlan(mflow, flow);
 		/* TODO: vlan? */
 
-		microflow->dummy_counters[i] = flow->esw_attr->counter;
+		/* TODO: refactor */
+		counter = microflow_get_dummy_counter(flow);
+		if (!counter)
+			goto err;
+		microflow->dummy_counters[i] = counter;
 	}
 
 	microflow_merge_tuple(mflow, &microflow->tuple);
 
 	/* TODO: Workaround: crashes otherwise, should fix */
 	mflow->esw_attr->action = mflow->esw_attr->action & ~MLX5_FLOW_CONTEXT_ACTION_CT;
-
-	counter = mlx5_fc_alloc(GFP_KERNEL);
-	if (IS_ERR(counter))
-		goto err;
-	mflow->esw_attr->counter = counter;
-
-	mlx5_fc_link_dummies(counter, microflow->dummy_counters, microflow->nr_flows);
 
 	err = configure_fdb(mflow);
 	if (err && err != -EAGAIN)
@@ -3482,6 +3480,9 @@ static int __microflow_merge(struct mlx5e_microflow *microflow)
 		etrace(" mflow: %px, hit EAGAIN in configure_fdb, mflow->rule[0]=%px", mflow, mflow->rule[0]);
 		goto err;
 	}
+
+	counter = mlx5_flow_rule_counter(mflow->rule[0]);
+	mlx5_fc_link_dummies(counter, microflow->dummy_counters, microflow->nr_flows);
 
 	microflow_attach(microflow);
 
@@ -3566,10 +3567,6 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 
 	flow = alloc_flow(priv, GFP_ATOMIC);
 	if (!flow)
-		goto err;
-
-	flow->esw_attr->counter = mlx5_fc_alloc(GFP_ATOMIC);
-	if (IS_ERR(flow->esw_attr->counter))
 		goto err_free;
 
 	flow->cookie = cookie;
@@ -3581,8 +3578,7 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 	return 0;
 
 err_free:
-	kvfree(flow->esw_attr->parse_attr);
-	kfree(flow);
+	kfree(ct_tuple);
 err:
 	microflow_cleanup(microflow);
 	return -1;
@@ -3773,7 +3769,11 @@ int mlx5e_stats_flower(struct mlx5e_priv *priv,
 	if (!flow || !same_flow_direction(flow, flags))
 		return -EINVAL;
 
-	counter = flow->esw_attr->counter;
+	if (flow->flags & MLX5E_TC_FLOW_SIMPLE)
+		counter = mlx5_flow_rule_counter(flow->rule[0]);
+	else
+		counter = flow->dummy_counter;
+
 	if (!counter)
 		return 0;
 
@@ -3834,7 +3834,7 @@ void ct_flow_offload_get_stats(struct nf_gen_flow_ct_stat *ct_stat, struct list_
 	trace("ct_flow_offload_get_stats");
 
 	list_for_each_entry(flow, head, ct) {
-		struct mlx5_fc *counter = flow->esw_attr->counter;
+		struct mlx5_fc *counter = flow->dummy_counter;
 
 		mlx5_fc_query_cached(counter, &bytes, &packets, &lastuse);
 		ct_stat->bytes += bytes;
