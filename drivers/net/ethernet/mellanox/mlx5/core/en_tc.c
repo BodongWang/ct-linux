@@ -3533,7 +3533,6 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 	struct mlx5e_microflow *microflow;
 	struct sk_buff *skb = cto->skb;
 	struct mlx5e_tc_flow *flow;
-	int err;
 	struct nf_conntrack_tuple *tuple = cto->tuple;
 	unsigned long cookie = (unsigned long) tuple;
 	struct mlx5_ct_tuple *ct_tuple;
