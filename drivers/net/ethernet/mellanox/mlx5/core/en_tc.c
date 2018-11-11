@@ -3559,7 +3559,7 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 	/* TODO: replace with a cache */
 	ct_tuple = kzalloc(sizeof(*ct_tuple), GFP_ATOMIC);
 	if (!ct_tuple)
-		return err;
+		goto err;
 
 	ct_tuple->net = cto->net;
 	ct_tuple->zone = *cto->zone;
