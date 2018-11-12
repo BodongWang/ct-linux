@@ -3768,7 +3768,7 @@ int mlx5e_stats_flower(struct mlx5e_priv *priv,
 	if (!flow || !same_flow_direction(flow, flags))
 		return -EINVAL;
 
-	if (flow->flags & MLX5E_TC_FLOW_SIMPLE)
+	if (flow->flags & MLX5E_TC_FLOW_OFFLOADED)
 		counter = mlx5_flow_rule_counter(flow->rule[0]);
 	else
 		counter = flow->dummy_counter;
