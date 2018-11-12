@@ -137,6 +137,7 @@ struct mlx5_fc_cache {
 	u64 lastuse;
 };
 
+#define FC_MAX_DUMMIES 8
 struct mlx5_fc {
 	struct rb_node node;
 	struct list_head list;
@@ -153,7 +154,7 @@ struct mlx5_fc {
 	bool dummy;
 
 	int nf_dummies;
-	struct mlx5_fc **dummies;
+	struct mlx5_fc *dummies[FC_MAX_DUMMIES];
 
 	struct mlx5_fc_cache cache ____cacheline_aligned_in_smp;
 };

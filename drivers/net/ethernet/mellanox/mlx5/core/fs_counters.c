@@ -268,8 +268,12 @@ EXPORT_SYMBOL(mlx5_fc_create);
 
 void mlx5_fc_link_dummies(struct mlx5_fc *counter, struct mlx5_fc **dummies, int nf_dummies)
 {
+	if (nf_dummies > (sizeof(counter->dummies)/sizeof(counter->dummies[0])))
+		return;
+	memcpy(counter->dummies, dummies, nf_dummies*sizeof(counter->dummies[0]));
+
 	/* TODO: use memory barrier, is the following correct? */
-	WRITE_ONCE(counter->dummies, dummies);
+	//WRITE_ONCE(counter->dummies, dummies);
 	WRITE_ONCE(counter->nf_dummies, nf_dummies);
 }
 
