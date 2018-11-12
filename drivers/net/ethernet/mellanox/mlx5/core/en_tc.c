@@ -3926,6 +3926,7 @@ void mlx5e_tc_esw_cleanup(struct mlx5e_priv *priv)
 
 	nft_gen_flow_offload_dep_ops_unregister(&ct_offload_ops);
 	flush_workqueue(microflow_wq);
+	destroy_workqueue(microflow_wq);
 
 	rhashtable_free_and_destroy(tc_ht, _mlx5e_tc_del_flow, NULL);
 	rhashtable_free_and_destroy(mf_ht, NULL, NULL);
