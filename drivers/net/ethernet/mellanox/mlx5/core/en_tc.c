@@ -3469,11 +3469,12 @@ static int __microflow_merge(struct mlx5e_microflow *microflow)
 
 	microflow_attach(microflow);
 
+	/* TOOD: microflow with VXLAN might be removed from HW, what about ct_flow offload? */
 	err = microflow_register_ct_flow(microflow);
 	if (err) {
-		mlx5e_tc_del_flow(priv, mflow);
-		kfree(mflow);
-		goto err_flow;
+		etrace("microflow_register_ct_flow failed");
+		mlx5e_tc_del_microflow(microflow);
+		return -1;
 	}
 
 	trace("microflow_merge: mflow: %px, flows: %d", mflow, microflow->nr_flows);
