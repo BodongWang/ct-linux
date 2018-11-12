@@ -87,6 +87,8 @@ enum {
 	MLX5E_TC_FLOW_SIMPLE	= BIT(MLX5E_TC_FLOW_BASE + 5),
 };
 
+struct mlx5e_microflow;
+
 struct mlx5_ct_tuple;
 
 #define MLX5E_TC_MAX_SPLITS 1
@@ -100,6 +102,7 @@ struct mlx5e_tc_flow {
 	struct list_head	encap;   /* flows sharing the same encap ID */
 	struct list_head	mod_hdr; /* flows sharing the same mod hdr ID */
 	struct list_head	hairpin; /* flows sharing the same hairpin */
+	struct mlx5e_microflow  *microflow;
 	struct mlx5_fc		*dummy_counter;
 
 	struct list_head        microflow_list;
@@ -116,8 +119,6 @@ struct mlx5e_tc_flow {
 	};
 	/* Don't add any fields here */
 };
-
-struct mlx5e_microflow;
 
 DEFINE_PER_CPU(struct mlx5e_microflow *, current_microflow) = NULL;
 
@@ -995,6 +996,30 @@ static struct rhashtable *get_mf_ht(struct mlx5e_priv *priv)
 	return &uplink_rpriv->mf_ht;
 }
 
+static void microflow_link_dummy_counters(struct mlx5e_microflow *microflow)
+{
+	struct mlx5e_tc_flow *flow = microflow->flow;
+	struct mlx5_fc *counter;
+
+	counter = mlx5_flow_rule_counter(flow->rule[0]);
+	if (!counter)
+		return;
+
+        mlx5_fc_link_dummies(counter, microflow->dummy_counters, microflow->nr_flows);
+}
+
+static void microflow_unlink_dummy_counters(struct mlx5e_microflow *microflow)
+{
+	struct mlx5e_tc_flow *flow = microflow->flow;
+	struct mlx5_fc *counter;
+
+	counter = mlx5_flow_rule_counter(flow->rule[0]);
+	if (!counter)
+		return;
+
+	mlx5_fc_unlink_dummies(counter);
+}
+
 static void mlx5e_tc_del_fdb_flow(struct mlx5e_priv *priv,
 				  struct mlx5e_tc_flow *flow);
 
@@ -1010,6 +1035,8 @@ static void mlx5e_tc_del_microflow(struct mlx5e_microflow *microflow)
 	/* Detach from all parent flows */
 	for (i=0; i<microflow->nr_flows; i++)
 		list_del(&microflow->mnodes[i].node);
+
+	microflow_unlink_dummy_counters(microflow);
 
 	mlx5e_tc_del_fdb_flow(microflow->priv, microflow->flow);
 	kfree(microflow->flow);
@@ -1104,6 +1131,9 @@ void mlx5e_tc_encap_flows_add(struct mlx5e_priv *priv,
 				continue;
 			}
 		}
+
+		if (flow->microflow)
+			microflow_link_dummy_counters(flow->microflow);
 
 		flow->flags |= MLX5E_TC_FLOW_OFFLOADED;
 	}
@@ -3420,6 +3450,8 @@ static int __microflow_merge(struct mlx5e_microflow *microflow)
 	if (!mflow)
 		goto err_flow;
 
+	mflow->microflow = microflow;
+
 	mflow->flags = MLX5E_TC_FLOW_SIMPLE;
 
 	mflow->esw_attr->in_rep = rpriv->rep;
@@ -3464,8 +3496,8 @@ static int __microflow_merge(struct mlx5e_microflow *microflow)
 	if (err && err != -EAGAIN)
 		goto err;
 
-	counter = mlx5_flow_rule_counter(mflow->rule[0]);
-	mlx5_fc_link_dummies(counter, microflow->dummy_counters, microflow->nr_flows);
+	if (err != EAGAIN)
+		microflow_link_dummy_counters(microflow);
 
 	microflow_attach(microflow);
 

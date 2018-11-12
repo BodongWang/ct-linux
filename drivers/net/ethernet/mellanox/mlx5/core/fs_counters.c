@@ -97,7 +97,7 @@ static void fc_dummies_update(struct mlx5_fc *counter,
 {
 	int i;
 
-	for (i=0; i<counter->nf_dummies; i++) {
+	for (i = 0; i < counter->nf_dummies; i++) {
 		struct mlx5_fc *s = counter->dummies[i];
 		struct mlx5_fc_cache *c = &s->cache;
 
@@ -271,6 +271,13 @@ void mlx5_fc_link_dummies(struct mlx5_fc *counter, struct mlx5_fc **dummies, int
 	/* TODO: use memory barrier, is the following correct? */
 	WRITE_ONCE(counter->dummies, dummies);
 	WRITE_ONCE(counter->nf_dummies, nf_dummies);
+}
+
+void mlx5_fc_unlink_dummies(struct mlx5_fc *counter)
+{
+	WRITE_ONCE(counter->nf_dummies, 0);
+	smp_wmb();
+	WRITE_ONCE(counter->dummies, NULL);
 }
 
 void mlx5_fc_destroy(struct mlx5_core_dev *dev, struct mlx5_fc *counter)
