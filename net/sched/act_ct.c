@@ -75,10 +75,14 @@ static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
 			NF_CT_DEFAULT_ZONE_DIR, 0);
 	tmpl = nf_ct_tmpl_alloc(net, &zone, GFP_ATOMIC);
 	/* TODO: check for error and many other stuff :) */
+
+    if (skb_nfct(skb))
+        nf_conntrack_put(skb_nfct(skb));
+
+	nf_conntrack_get(&tmpl->ct_general);	
 	nf_ct_set(skb, tmpl, IP_CT_NEW);
 
 	__set_bit(IPS_CONFIRMED_BIT, &tmpl->status);
-	nf_conntrack_get(&tmpl->ct_general);
 
 	err = nf_conntrack_in(net, PF_INET,
 			      NF_INET_PRE_ROUTING, skb);
