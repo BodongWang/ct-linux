@@ -980,9 +980,6 @@ static int esw_offloads_stop(struct mlx5_eswitch *esw)
 			esw_warn(esw->dev, "Failed setting eswitch back to offloads, err %d\n", err);
 	}
 
-	/* enable back PF RoCE */
-	mlx5_reload_interface(esw->dev, MLX5_INTERFACE_PROTOCOL_IB);
-
 	return err;
 }
 
