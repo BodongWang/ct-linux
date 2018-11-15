@@ -3052,6 +3052,7 @@ static struct mlx5e_tc_flow *alloc_flow(struct mlx5e_priv *priv, gfp_t flags)
 
 	INIT_LIST_HEAD(&flow->microflow_list);
 	flow->priv = priv;
+	flow->flags = MLX5E_TC_FLOW_ESWITCH;
 	flow->esw_attr->parse_attr = parse_attr;
 	return flow;
 
@@ -3452,7 +3453,7 @@ static int __microflow_merge(struct mlx5e_microflow *microflow)
 
 	mflow->microflow = microflow;
 
-	mflow->flags = MLX5E_TC_FLOW_SIMPLE;
+	mflow->flags |= MLX5E_TC_FLOW_SIMPLE;
 
 	mflow->esw_attr->in_rep = rpriv->rep;
 	mflow->esw_attr->in_mdev = priv->mdev;
