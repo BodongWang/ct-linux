@@ -2999,21 +2999,21 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 		err = parse_tc_fdb_actions(priv, f->exts, parse_attr, flow);
 		if (err < 0)
 			goto err_free;
+
+		trace("is_flow_simple(flow): %d, chain_index: %d", is_flow_simple(flow, chain_index), chain_index);
+		if (is_flow_simple(flow, chain_index)) {
+			flow->flags |= MLX5E_TC_FLOW_SIMPLE;
+
+			err = configure_fdb(flow);
+			if (err && err != -EAGAIN)
+				goto err_free;
+		}
 	} else {
 		err = parse_tc_nic_actions(priv, f->exts, parse_attr, flow);
 		if (err < 0)
 			goto err_free;
 		/* TOOD: handle NIC flow properly */
 		flow->rule[0] = mlx5e_tc_add_nic_flow(priv, parse_attr, flow);
-	}
-
-	trace("is_flow_simple(flow): %d, chain_index: %d", is_flow_simple(flow, chain_index), chain_index);
-	if (is_flow_simple(flow, chain_index)) {
-		flow->flags |= MLX5E_TC_FLOW_SIMPLE;
-
-		err = configure_fdb(flow);
-		if (err && err != -EAGAIN)
-			goto err_free;
 	}
 
 	if (flow->flags & MLX5E_TC_FLOW_NIC)
