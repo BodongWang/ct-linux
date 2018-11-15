@@ -76,8 +76,8 @@ static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
 	tmpl = nf_ct_tmpl_alloc(net, &zone, GFP_ATOMIC);
 	/* TODO: check for error and many other stuff :) */
 
-    if (skb_nfct(skb))
-        nf_conntrack_put(skb_nfct(skb));
+	if (skb_nfct(skb))
+		nf_conntrack_put(skb_nfct(skb));
 
 	nf_conntrack_get(&tmpl->ct_general);	
 	nf_ct_set(skb, tmpl, IP_CT_NEW);
