@@ -522,21 +522,6 @@ void mlx5_lag_add(struct mlx5_core_dev *dev, struct net_device *netdev)
 	}
 }
 
-bool mlx5_lag_is_pfN(struct mlx5_core_dev *dev, int n)
-{
-	struct mlx5_lag *ldev;
-
-	ldev = mlx5_lag_dev_get(dev);
-
-	if (!ldev || n > 1)
-		return false;
-
-	if (ldev->pf[n].dev == dev)
-		return true;
-
-	return false;
-}
-
 /* Must be called with intf_mutex held */
 void mlx5_lag_remove(struct mlx5_core_dev *dev)
 {
