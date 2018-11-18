@@ -4909,9 +4909,21 @@ struct net_device *mlx5e_create_netdev(struct mlx5_core_dev *mdev,
 	struct net_device *netdev;
 	struct mlx5e_priv *priv;
 
-	netdev = alloc_etherdev_mqs(sizeof(struct mlx5e_priv),
-				    nch * profile->max_tc,
-				    nch);
+	if (ppriv) {
+		char ethname[strlen("repn-ffff")];
+		struct mlx5e_rep_priv *rpriv = ppriv;
+		int fn = PCI_FUNC(mdev->pdev->devfn);
+
+		sprintf(ethname, "rep%d-%x", fn, rpriv->rep->vport);
+		netdev = alloc_netdev_mqs(sizeof(struct mlx5e_priv), ethname, NET_NAME_USER,
+				ether_setup, nch * profile->max_tc,
+				nch);
+	} else {
+		netdev = alloc_etherdev_mqs(sizeof(struct mlx5e_priv),
+				nch * profile->max_tc,
+				nch);
+	}
+
 	if (!netdev) {
 		mlx5_core_err(mdev, "alloc_etherdev_mqs() failed\n");
 		return NULL;
