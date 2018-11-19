@@ -1144,7 +1144,17 @@ static void mlx5e_build_rep_netdev(struct net_device *netdev)
 
 	netdev->features |= netdev->hw_features;
 
-	eth_hw_addr_random(netdev);
+	if (rep->vport == FDB_UPLINK_VPORT) {
+		mlx5_query_nic_vport_mac_address(priv->mdev, ECPF_ESW_PORT_NUMBER, netdev->dev_addr);
+		if (is_zero_ether_addr(netdev->dev_addr) &&
+		    !MLX5_CAP_GEN(priv->mdev, vport_group_manager)) {
+			eth_hw_addr_random(netdev);
+			mlx5_core_info(priv->mdev,
+					"Assigned random MAC address %pM for uplink rep\n",
+					netdev->dev_addr);
+		}
+	} else
+		eth_hw_addr_random(netdev);
 
 	netdev->min_mtu = ETH_MIN_MTU;
 	mlx5_query_port_max_mtu(mdev, &max_mtu, 1);
