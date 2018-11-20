@@ -445,7 +445,7 @@ int ovs_vport_receive(struct vport *vport, struct sk_buff *skb,
 	struct sw_flow_key key;
 	int error;
 
-	trace("TC_CB(skb)->recirc_id: %d", TC_CB(skb)->recirc_id);
+	//trace("TC_CB(skb)->recirc_id: %d", TC_CB(skb)->recirc_id);
 	OVS_CB(skb)->recirc_id = TC_CB(skb)->recirc_id;
 	OVS_CB(skb)->input_vport = vport;
 	OVS_CB(skb)->mru = 0;

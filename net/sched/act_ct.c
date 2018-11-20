@@ -103,6 +103,8 @@ static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
 		goto out;
 	}
 
+	trace("ct_notify_underlying_device: dev = %s, ctinfo = %d",
+	      skb->dev->name, ctinfo);
 	if (ctinfo == IP_CT_ESTABLISHED ||
 	    ctinfo == IP_CT_ESTABLISHED_REPLY) {
 		ct_notify_underlying_device(skb, ct, ctinfo, net);

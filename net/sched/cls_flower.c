@@ -247,7 +247,7 @@ static int fl_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 
 		f = fl_lookup(mask, &skb_mkey);
 		if (f && !tc_skip_sw(f->flags)) {
-			trace("calling notify_underlying_device with f: %px", f);
+			trace("dev = %s", skb->dev->name);
 			fl_notify_underlying_device(skb, tp, f);
 			*res = f->res;
 			return tcf_exts_exec(skb, &f->exts, res);

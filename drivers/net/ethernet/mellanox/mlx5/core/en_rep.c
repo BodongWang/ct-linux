@@ -881,11 +881,6 @@ static int mlx5e_rep_setup_tc_cb_egdev(enum tc_setup_type type, void *type_data,
 
 	switch (type) {
 	case TC_SETUP_CLSFLOWER:
-		//if (!tc_cls_can_offload_and_chain0(priv->netdev, type_data)) {
-		//	printk(KERN_ERR "%s %d %s @@ got no chain 0 rule on rep egdev\n", __FILE__, __LINE__, __func__);
-		//	return -EOPNOTSUPP;
-		//}
-
 		return mlx5e_rep_setup_tc_cls_flower(priv, type_data, MLX5E_TC_EGRESS |
 						     MLX5E_TC_ESW_OFFLOAD);
 	case TC_SETUP_MICROFLOW:
@@ -906,11 +901,6 @@ static int mlx5e_rep_setup_tc_cb(enum tc_setup_type type, void *type_data,
 
 	switch (type) {
 	case TC_SETUP_CLSFLOWER:
-		//if (!tc_cls_can_offload_and_chain0(priv->netdev, type_data)) {
-		//	printk(KERN_ERR "%s %d %s @@ got no chain 0 rule on rep as ingress\n", __FILE__, __LINE__, __func__);
-		//	return -EOPNOTSUPP;
-		//}
-
 	return mlx5e_rep_setup_tc_cls_flower(priv, type_data, MLX5E_TC_INGRESS |
 					     MLX5E_TC_ESW_OFFLOAD);
 	case TC_SETUP_MICROFLOW:

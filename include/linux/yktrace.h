@@ -29,7 +29,7 @@
  : __FILE__)
 
 #define __trace(fmt, args...) \
-            printk("[ct-poc, %d] <%s/%s> "fmt"\n", task_cpu(current), __SHORT_FORM_OF_FILE__, __func__, ##args)
+            printk("[cpu-%d] <%s/%s> "fmt"\n", task_cpu(current), __SHORT_FORM_OF_FILE__, __func__, ##args)
 
 
 #if TRACE
