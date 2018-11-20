@@ -3762,7 +3762,7 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 		if (err == -EEXIST) {
 			//FIXME: should we return if it exists?
 			ntrace("Microflow exists");
-			goto out;
+			goto err_cleanup;
 		} else {
 			ntrace("Microflow insert fast failed, err = %d", err);
 			goto err_cleanup;
@@ -3773,7 +3773,6 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	if (err)
 		goto err_work;
 
-out:
 	microflow_write(NULL);
 
 	return 0;
