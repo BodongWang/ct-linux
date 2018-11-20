@@ -1031,8 +1031,6 @@ static void mlx5e_tc_del_microflow(struct mlx5e_microflow *microflow)
 	struct rhashtable *mf_ht = get_mf_ht(microflow->priv);
 	int i;
 
-	trace("nr_flows: %d", microflow->nr_flows);
-
 	/* Detach from all parent flows */
 	for (i=0; i<microflow->nr_flows; i++)
 		list_del(&microflow->mnodes[i].node);
@@ -1074,8 +1072,24 @@ static void mlx5e_tc_del_fdb_flow(struct mlx5e_priv *priv,
 				  struct mlx5e_tc_flow *flow)
 {
 	struct mlx5_esw_flow_attr *attr = flow->esw_attr;
+	struct nf_conntrack_tuple *nf_tuple = NULL;
 
-	trace("mlx5e_tc_del_fdb_flow");
+	if (flow->ct_tuple) {
+		nf_tuple = &flow->ct_tuple->tuple;
+	} else if (flow->microflow) {
+		nf_tuple = &flow->microflow->tuple;
+	}
+
+	if (nf_tuple)
+		printk("mlx5e_tc_del_fdb_flow-%d: sip-%pI4, dip-%pI4, sport-%d, dport-%d",
+		       !!(flow->flags & MLX5E_TC_FLOW_SIMPLE),
+		       &nf_tuple->src.u3.ip,
+		       &nf_tuple->dst.u3.ip,
+		       ntohs(nf_tuple->src.u.udp.port),
+		       ntohs(nf_tuple->dst.u.udp.port));
+	else
+		printk("mlx5e_tc_del_fdb_flow-%d", !!(flow->flags & MLX5E_TC_FLOW_SIMPLE));
+
 
 	if (flow->flags & MLX5E_TC_FLOW_SIMPLE) {
 		__mlx5e_tc_del_fdb_flow(priv, flow);
@@ -2956,6 +2970,19 @@ static int configure_fdb(struct mlx5e_tc_flow *flow)
 	return err;
 }
 
+static char *get_offload_flags(int flags)
+{
+	if (flags & (MLX5E_TC_ESW_OFFLOAD | MLX5E_TC_INGRESS))
+		return "ESW_INGRESS";
+	if (flags & (MLX5E_TC_ESW_OFFLOAD | MLX5E_TC_EGRESS))
+		return "ESW_EGRESS";
+	if (flags & (MLX5E_TC_NIC_OFFLOAD | MLX5E_TC_INGRESS))
+		return "NIC_INGRESS";
+	if (flags & (MLX5E_TC_NIC_OFFLOAD | MLX5E_TC_EGRESS))
+		return "NIC_EGRESS";
+	return "UNKNOWN";
+}
+
 int mlx5e_configure_flower(struct mlx5e_priv *priv,
 			   struct tc_cls_flower_offload *f, int flags)
 {
@@ -2966,15 +2993,7 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 	int attr_size, err = 0;
 	u8 flow_flags = 0;
 
-	if (flags & MLX5E_TC_ESW_OFFLOAD)
-		trace("ESW_OFFLOAD: netdev = %s, flag = 0x%x",
-		      priv->netdev->name, flags);
-	else if (flags & MLX5E_TC_NIC_OFFLOAD)
-		trace("NIC_OFFLOAD: netdev = %s, flag = 0x%x",
-		      priv->netdev->name, flags);
-	else
-		trace("UNKNOWN: netdev = %s, flag = 0x%x",
-		      priv->netdev->name, flags);
+	printk("%s:%s: %s\n", __func__, priv->netdev->name, get_offload_flags(flags));
 
 	flow = rhashtable_lookup_fast(tc_ht, &f->cookie, tc_ht_params);
 	if (flow) {
@@ -3037,7 +3056,6 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 		kfree(flow);
 	}
 
-	trace("Done");
 	return err;
 
 err_free:
@@ -3133,8 +3151,6 @@ static int microflow_merge_hdr(struct mlx5e_priv *priv,
 
 	if (!(flow->esw_attr->action & MLX5_FLOW_CONTEXT_ACTION_MOD_HDR))
 		return 0;
-
-	trace("merge MOD_HDR action");
 
 	action_size = MLX5_MH_ACT_SZ;
 
@@ -3573,15 +3589,8 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 	if (!microflow)
 		return -1;
 
-	if (flags & MLX5E_TC_ESW_OFFLOAD)
-		trace("ESW_OFFLOAD: flag = 0x%x, nr_flows = %d",
-		      flags, microflow->nr_flows);
-	else if (flags & MLX5E_TC_NIC_OFFLOAD)
-		trace("NIC_OFFLOAD: flag = 0x%x, nr_flows = %d",
-		      flags, microflow->nr_flows);
-	else
-		trace("UNKNOWN: flag = 0x%x, nr_flows = %d",
-		      flags, microflow->nr_flows);
+	printk("%s:%s: %s, nr_flows = %d\n",
+	       __func__, priv->netdev->name, get_offload_flags(flags), microflow->nr_flows);
 
 	if (microflow->nr_flows == -1)
 		goto err;
@@ -3714,15 +3723,9 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	if ((microflow->cookie != (u64)skb) ||(0 == mf->chain_index))
 		microflow_init(microflow, priv, skb);
 
-	if (flags & MLX5E_TC_ESW_OFFLOAD)
-		trace("ESW_OFFLOAD: last_flow: %d, flag = 0x%x, nr_flows = %d",
-		      mf->last_flow, flags, microflow->nr_flows);
-	else if (flags & MLX5E_TC_NIC_OFFLOAD)
-		trace("NIC_OFFLOAD: last_flow: %d, flag = 0x%x, nr_flows = %d",
-		      mf->last_flow, flags, microflow->nr_flows);
-	else
-		trace("UNKNOWN: last_flow: %d, flag = 0x%x, nr_flows = %d",
-		      mf->last_flow, flags, microflow->nr_flows);
+	printk("%s:%s: %s, last_flow = %d, nr_flows = %d\n",
+	       __func__, priv->netdev->name, get_offload_flags(flags),
+	       mf->last_flow, microflow->nr_flows);
 
 	if (microflow->nr_flows == -1)
 		goto err_cleanup;
@@ -3917,8 +3920,6 @@ int ct_flow_offload_destroy(struct list_head *head)
 {
 	struct mlx5e_tc_flow *flow, *n;
 
-	trace("ct_flow_offload_destroy");
-
 	list_for_each_entry_safe(flow, n, head, ct) {
 		list_del(&flow->ct);
 
@@ -3982,7 +3983,8 @@ void mlx5e_tc_esw_cleanup(struct mlx5e_priv *priv, int flags)
 	int cpu;
 
 	nft_gen_flow_offload_dep_ops_unregister(&ct_offload_ops);
-	flush_workqueue(microflow_wq);
+	//FIXME: crash
+	//flush_workqueue(microflow_wq);
 	destroy_workqueue(microflow_wq);
 
 	rhashtable_free_and_destroy(tc_ht, _mlx5e_tc_del_flow, NULL);

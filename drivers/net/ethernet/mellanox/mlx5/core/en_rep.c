@@ -1349,8 +1349,12 @@ mlx5e_vport_rep_load(struct mlx5_core_dev *dev, struct mlx5_eswitch_rep *rep)
 		if (err)
 			goto  err_neigh_cleanup;
 	} else {
+		/*
 		err = tc_setup_cb_egdev_register(netdev, mlx5e_rep_setup_tc_cb_egdev,
 						 upriv);
+						 */
+		err = tc_setup_cb_egdev_all_register(netdev, mlx5e_rep_setup_tc_cb_egdev,
+						     upriv);
 		if (err)
 			goto err_neigh_cleanup;
 	}
@@ -1369,7 +1373,7 @@ err_egdev_cleanup:
 	if (rep->vport == FDB_UPLINK_VPORT)
 		mlx5e_tc_esw_cleanup(upriv, MLX5E_TC_ESW_OFFLOAD);
 	else
-		tc_setup_cb_egdev_unregister(netdev, mlx5e_rep_setup_tc_cb_egdev,
+		tc_setup_cb_egdev_all_unregister(netdev, mlx5e_rep_setup_tc_cb_egdev,
 					     upriv);
 
 err_neigh_cleanup:
@@ -1408,7 +1412,7 @@ mlx5e_vport_rep_unload(struct mlx5_eswitch_rep *rep)
 		/* delete shared tc flow table */
 		mlx5e_tc_esw_cleanup(upriv, MLX5E_TC_ESW_OFFLOAD);
 	} else {
-		tc_setup_cb_egdev_unregister(netdev, mlx5e_rep_setup_tc_cb_egdev,
+		tc_setup_cb_egdev_all_unregister(netdev, mlx5e_rep_setup_tc_cb_egdev,
 					     upriv);
 	}
 

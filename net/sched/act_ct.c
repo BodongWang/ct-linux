@@ -46,11 +46,13 @@ static void ct_notify_underlying_device(struct sk_buff *skb, struct nf_conn *ct,
 	}
 
 	/* TODO: do we want tuple as a cookie? */
-	//tc_setup_cb_call(NULL, NULL, TC_SETUP_CT, &cto, false);
+	tc_setup_cb_call(NULL, NULL, TC_SETUP_CT, &cto, false);
+	/*
 	if (skb->dev) {
 		tc_setup_cb_egdev_call(skb->dev, TC_SETUP_CT, &cto, false);
 		trace("tc_setup_cb_egdev_call: dev = %s", skb->dev->name);
 	}
+	*/
 }
 
 static int tcf_conntrack(struct sk_buff *skb, const struct tc_action *a,
