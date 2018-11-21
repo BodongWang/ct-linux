@@ -459,7 +459,20 @@ static inline int rhashtable_compare(struct rhashtable_compare_arg *arg,
 	struct rhashtable *ht = arg->ht;
 	const char *ptr = obj;
 
-	return memcmp(ptr + ht->p.key_offset, arg->key, ht->p.key_len);
+	if (!ht || !(arg->key) || !ptr) {
+		printk("ht = %d, key = %d, ptr = %d\n", !!ht, !!arg->key, !!ptr);
+		return -1;
+	}
+
+	if (!(ptr + ht->p.key_offset)) {
+		printk("ptr + ht->p.key_offset is NULL\n");
+		return -1;
+	}
+
+
+	return memcmp(ptr + ht->p.key_offset,
+		      arg->key,
+		      ht->p.key_len);
 }
 
 /* Internal function, do not use. */
