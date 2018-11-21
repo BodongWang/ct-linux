@@ -65,6 +65,7 @@
 static int enable_ct_ageing = 1; /* On by default */
 module_param(enable_ct_ageing, int, 0644);
 static int enable_printk = 0;
+static int enable_printk_flow = 1;
 
 struct mlx5_nic_flow_attr {
 	u32 action;
@@ -1081,15 +1082,17 @@ static void mlx5e_tc_del_fdb_flow(struct mlx5e_priv *priv,
 		nf_tuple = &flow->microflow->tuple;
 	}
 
-	if (nf_tuple)
-		printk("mlx5e_tc_del_fdb_flow-%d: sip-%pI4, dip-%pI4, sport-%d, dport-%d",
-		       !!(flow->flags & MLX5E_TC_FLOW_SIMPLE),
-		       &nf_tuple->src.u3.ip,
-		       &nf_tuple->dst.u3.ip,
-		       ntohs(nf_tuple->src.u.udp.port),
-		       ntohs(nf_tuple->dst.u.udp.port));
-	else
-		printk("mlx5e_tc_del_fdb_flow-%d", !!(flow->flags & MLX5E_TC_FLOW_SIMPLE));
+	if (enable_printk_flow) {
+		if (nf_tuple)
+			printk("mlx5e_tc_del_fdb_flow-%d: sip-%pI4, dip-%pI4, sport-%d, dport-%d",
+			       !!(flow->flags & MLX5E_TC_FLOW_SIMPLE),
+			       &nf_tuple->src.u3.ip,
+			       &nf_tuple->dst.u3.ip,
+			       ntohs(nf_tuple->src.u.udp.port),
+			       ntohs(nf_tuple->dst.u.udp.port));
+		else
+			printk("mlx5e_tc_del_fdb_flow-%d", !!(flow->flags & MLX5E_TC_FLOW_SIMPLE));
+	}
 
 
 	if (flow->flags & MLX5E_TC_FLOW_SIMPLE) {
@@ -2985,6 +2988,11 @@ static char *get_offload_flags(int flags)
 	if (flags & (MLX5E_TC_NIC_OFFLOAD | MLX5E_TC_EGRESS) ==
 	    (MLX5E_TC_NIC_OFFLOAD | MLX5E_TC_EGRESS))
 		return "NIC_EGRESS";
+	if (flags & MLX5E_TC_ESW_OFFLOAD == MLX5E_TC_ESW_OFFLOAD)
+		return "ESW_OFFLOAD";
+	if (flags & MLX5E_TC_NIC_OFFLOAD == MLX5E_TC_NIC_OFFLOAD)
+		return "NIC_OFFLOAD";
+
 	return "UNKNOWN";
 }
 
@@ -3421,12 +3429,15 @@ static int microflow_register_ct_flow(struct mlx5e_microflow *microflow)
 			etrace("nft_gen_flow_offload_add failed: err: %d", err);
 			return err;
 		} else {
-			nf_tuple = &flow->ct_tuple->tuple;
-			printk("nft-add-flow-%d: sip-%pI4, dip-%pI4, sport-%d, dport-%d", i,
-			       &nf_tuple->src.u3.ip,
-			       &nf_tuple->dst.u3.ip,
-			       ntohs(nf_tuple->src.u.udp.port),
-			       ntohs(nf_tuple->dst.u.udp.port));
+
+			if (enable_printk_flow) {
+				nf_tuple = &flow->ct_tuple->tuple;
+				printk("nft-add-flow-%d: sip-%pI4, dip-%pI4, sport-%d, dport-%d", i,
+				       &nf_tuple->src.u3.ip,
+				       &nf_tuple->dst.u3.ip,
+				       ntohs(nf_tuple->src.u.udp.port),
+				       ntohs(nf_tuple->dst.u.udp.port));
+			}
 		}
 
 		kfree(flow->ct_tuple);
@@ -3775,7 +3786,7 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 			//FIXME: should we return if it exists?
 			//printk("Microflow exists");
 			goto err_cleanup;
-			return 0;
+			//return 0;
 		} else {
 			ntrace("Microflow insert fast failed, err = %d", err);
 			goto err_cleanup;
@@ -3811,7 +3822,7 @@ static bool same_flow_direction(struct mlx5e_tc_flow *flow, int flags)
 int mlx5e_delete_flower(struct mlx5e_priv *priv,
 			struct tc_cls_flower_offload *f, int flags)
 {
-	struct rhashtable *tc_ht = get_tc_ht(priv, MLX5E_TC_ESW_OFFLOAD);
+	struct rhashtable *tc_ht = get_tc_ht(priv, flags);
 	struct mlx5e_tc_flow *flow;
 
 	flow = rhashtable_lookup_fast(tc_ht, &f->cookie, tc_ht_params);
@@ -3830,7 +3841,7 @@ int mlx5e_delete_flower(struct mlx5e_priv *priv,
 int mlx5e_stats_flower(struct mlx5e_priv *priv,
 		       struct tc_cls_flower_offload *f, int flags)
 {
-	struct rhashtable *tc_ht = get_tc_ht(priv, MLX5E_TC_ESW_OFFLOAD);
+	struct rhashtable *tc_ht = get_tc_ht(priv, flags);
 	struct mlx5e_tc_flow *flow;
 	struct mlx5_fc *counter;
 	u64 bytes;
