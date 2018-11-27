@@ -108,6 +108,7 @@ struct mlx5e_tc_flow {
 	struct mlx5_fc		*dummy_counter;
 
 	struct list_head        microflow_list;
+	struct mutex		mf_list_mutex;
 
 	struct mlx5_ct_tuple    *ct_tuple;
 
@@ -1031,11 +1032,19 @@ static void microflow_free(struct mlx5e_microflow *microflow);
 static void mlx5e_tc_del_microflow(struct mlx5e_microflow *microflow)
 {
 	struct rhashtable *mf_ht = get_mf_ht(microflow->priv);
+	struct mlx5e_tc_flow *flow;
 	int i;
 
 	/* Detach from all parent flows */
-	for (i=0; i<microflow->nr_flows; i++)
+	for (i=0; i<microflow->nr_flows; i++) {
+		flow = microflow->path.flows[i];
+		if (!flow)
+			continue;
+
+		mutex_lock(&flow->mf_list_mutex);
 		list_del(&microflow->mnodes[i].node);
+		mutex_unlock(&flow->mf_list_mutex);
+	}
 
 	microflow_unlink_dummy_counters(microflow);
 
@@ -1091,7 +1100,8 @@ static void mlx5e_tc_del_fdb_flow(struct mlx5e_priv *priv,
 			       ntohs(nf_tuple->src.u.udp.port),
 			       ntohs(nf_tuple->dst.u.udp.port));
 		else
-			printk("mlx5e_tc_del_fdb_flow-%d", !!(flow->flags & MLX5E_TC_FLOW_SIMPLE));
+			printk("mlx5e_tc_del_fdb_flow-%d",
+			       !!(flow->flags & MLX5E_TC_FLOW_SIMPLE));
 	}
 
 
@@ -2911,7 +2921,7 @@ static const struct rhashtable_params tc_ht_params = {
 	.head_offset = offsetof(struct mlx5e_tc_flow, node),
 	.key_offset = offsetof(struct mlx5e_tc_flow, cookie),
 	.key_len = sizeof(((struct mlx5e_tc_flow *)0)->cookie),
-	.automatic_shrinking = true,
+	.automatic_shrinking = false,
 };
 
 static struct rhashtable *get_tc_ht(struct mlx5e_priv *priv, int flags)
@@ -2923,7 +2933,7 @@ static struct rhashtable *get_tc_ht(struct mlx5e_priv *priv, int flags)
 		uplink_rpriv = mlx5_eswitch_get_uplink_priv(esw, REP_ETH);
 		return &uplink_rpriv->tc_ht;
 	} else /* NIC offload */
-		return &priv->fs.tc.ht;
+		return NULL;//&priv->fs.tc.ht;
 }
 
 static bool is_flow_simple(struct mlx5e_tc_flow *flow, int chain_index)
@@ -3009,10 +3019,12 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 	if (enable_printk)
 		printk("%s:%s: %s\n", __func__, priv->netdev->name, get_offload_flags(flags));
 
-	printk("%s-%d: lookup 0x%lx\n", __func__, __LINE__, f->cookie);
 	flow = rhashtable_lookup_fast(tc_ht, &f->cookie, tc_ht_params);
+	printk("%s-%d: lookup 0x%lx, exist = %d\n", __func__, __LINE__,
+	       f->cookie, !!flow);
 	if (flow) {
-		netdev_warn_once(priv->netdev, "flow cookie %lx already exists, ignoring\n", f->cookie);
+		netdev_warn_once(priv->netdev, "flow cookie %lx already exists, ignoring\n",
+				 f->cookie);
 		return 0;
 	}
 
@@ -3032,6 +3044,7 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 
 	/* TODO: fix; alloc_flow?? */
 	INIT_LIST_HEAD(&flow->microflow_list);
+	mutex_init(&flow->mf_list_mutex);
 	flow->cookie = f->cookie;
 	flow->flags = flow_flags;
 	flow->priv = priv;
@@ -3045,8 +3058,8 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 		if (err < 0)
 			goto err_free;
 
-		trace("is_flow_simple: %d, chain_index: %d",
-		      is_flow_simple(flow, chain_index), chain_index);
+		//FIXME: What about non-simple flows? Whd do we insert them to
+		//the hashtable??
 		if (is_flow_simple(flow, chain_index)) {
 			flow->flags |= MLX5E_TC_FLOW_SIMPLE;
 
@@ -3065,10 +3078,10 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 	if (flow->flags & MLX5E_TC_FLOW_NIC)
 		kvfree(parse_attr);
 
-	//FIXME: crash
-	printk("%s-%d: insert 0x%lx\n", __func__, __LINE__, flow->cookie);
 	err = rhashtable_lookup_insert_fast(tc_ht, &flow->node, tc_ht_params);
-	if (err && err != -EEXIST) {
+	printk("%s-%d: insert 0x%lx, simple = %d, err = %d\n", __func__, __LINE__,
+	       flow->cookie, is_flow_simple(flow, chain_index), err);
+	if (err) {
 		mlx5e_tc_del_flow(priv, flow);
 		kfree(flow);
 	}
@@ -3098,6 +3111,7 @@ static struct mlx5e_tc_flow *alloc_flow(struct mlx5e_priv *priv, gfp_t flags)
 	}
 
 	INIT_LIST_HEAD(&flow->microflow_list);
+	mutex_init(&flow->mf_list_mutex);
 	flow->priv = priv;
 	flow->flags = MLX5E_TC_FLOW_ESWITCH;
 	flow->esw_attr->parse_attr = parse_attr;
@@ -3371,9 +3385,16 @@ static void microflow_attach(struct mlx5e_microflow *microflow)
 	/* Attach to all parent flows */
 	for (i=0; i<microflow->nr_flows; i++) {
 		flow = microflow->path.flows[i];
+		if (!flow)// || !flow->cookie)
+			continue;
 
+		printk("%s: i = %d, cookie = %lx\n",
+		       __func__, i, flow->cookie);
 		microflow->mnodes[i].microflow = microflow;
+
+		mutex_lock(&flow->mf_list_mutex);
 		list_add(&microflow->mnodes[i].node, &flow->microflow_list);
+		mutex_unlock(&flow->mf_list_mutex);
 	}
 }
 
@@ -3386,16 +3407,19 @@ static void microflow_cleanup(struct mlx5e_microflow *microflow)
 
 	for (i = 0; i < microflow->nr_flows; i++) {
 		flow = microflow->path.flows[i];
+		// Flows added by configure_microflow
 		if (!flow)
 			continue;
 
+		// Flows added by configure_ct
 		if (!flow->ct_tuple)
 			continue;
 
-		//FIXME: crash
-		printk("%s-%d: remove 0x%lx, idx = %d/%d\n",
-		       __func__, __LINE__, flow->cookie, i, microflow->nr_flows);
-		rhashtable_remove_fast(tc_ht, &flow->node, tc_ht_params);
+		if (rhashtable_lookup_fast(tc_ht, &flow->cookie, tc_ht_params)) {
+			rhashtable_remove_fast(tc_ht, &flow->node, tc_ht_params);
+			printk("%s-%d: remove 0x%lx, idx = %d/%d\n",
+			       __func__, __LINE__, flow->cookie, i, microflow->nr_flows);
+		}
 
 		kfree(flow->ct_tuple);
 		kfree(flow->dummy_counter);
@@ -3405,6 +3429,7 @@ static void microflow_cleanup(struct mlx5e_microflow *microflow)
 		memset(flow, 0, sizeof(struct mlx5e_tc_flow));
 	}
 
+	//FIXME: Why???
 	microflow->nr_flows = -1;
 }
 
@@ -3440,8 +3465,8 @@ static int microflow_register_ct_flow(struct mlx5e_microflow *microflow)
 				printk("%s-%d: key: 0x%lx, %d/%d\n",
 				       __func__, __LINE__, flow->cookie, i, microflow->nr_flows);
 				nf_tuple = &flow->ct_tuple->tuple;
-				printk("nft-add-flow-%d: sip-%pI4, dip-%pI4, sport-%d, dport-%d", i,
-				       &nf_tuple->src.u3.ip,
+				printk("nft-add-flow-%d: sip-%pI4, dip-%pI4, sport-%d, dport-%d",
+				       i, &nf_tuple->src.u3.ip,
 				       &nf_tuple->dst.u3.ip,
 				       ntohs(nf_tuple->src.u.udp.port),
 				       ntohs(nf_tuple->dst.u.udp.port));
@@ -3466,21 +3491,16 @@ static int microflow_resolve_path_flows(struct mlx5e_microflow *microflow)
 
 	for (i = 0; i < microflow->nr_flows; i++) {
 		cookie = microflow->path.cookies[i];
-		printk("%s-%d: lookup 0x%lx, %d/%d\n",
-		       __func__, __LINE__, cookie, i, microflow->nr_flows);
 		flow = rhashtable_lookup_fast(tc_ht, &cookie, tc_ht_params);
+		//printk("%s-%d: lookup 0x%lx, %d/%d, exist = %d\n",
+		 //      __func__, __LINE__, cookie, i, microflow->nr_flows, !!flow);
 		if (flow) {
-			if (microflow->path.flows[i] &&
-			    microflow->path.flows[i] != flow) {
-				struct mlx5e_tc_flow *flow = microflow->path.flows[i];
-
-				printk("%s-%d: remove 0x%lx\n", __func__,
-				       __LINE__, flow->cookie);
-				rhashtable_remove_fast(tc_ht, &flow->node, tc_ht_params);
-				kfree(flow->ct_tuple);
-				/* kfree(flow->dummy_counter); */
-				kvfree(flow->esw_attr->parse_attr);
-				kfree(flow);
+			if (microflow->path.flows[i]) {
+				struct mlx5e_tc_flow *path_flow = microflow->path.flows[i];
+				kfree(path_flow->ct_tuple);
+				/* kfree(path_flow->dummy_counter); */
+				kvfree(path_flow->esw_attr->parse_attr);
+				kfree(path_flow);
 			}
 			microflow->path.flows[i] = flow;
 			continue;
@@ -3489,11 +3509,10 @@ static int microflow_resolve_path_flows(struct mlx5e_microflow *microflow)
 		flow = microflow->path.flows[i];
 		if (!flow)
 			goto err;
-
-		printk("%s-%d: insert 0x%lx, %d/%d\n",
-		       __func__, __LINE__, flow->cookie, i, microflow->nr_flows);
 		err = rhashtable_lookup_insert_fast(tc_ht, &flow->node, tc_ht_params);
-		if (err && err != -EEXIST)
+		printk("%s-%d: insert 0x%lx, %d/%d, err = %d\n",
+		       __func__, __LINE__, flow->cookie, i, microflow->nr_flows, err);
+		if (err)
 			goto err;
 	}
 
@@ -3513,6 +3532,9 @@ static int __microflow_merge(struct mlx5e_microflow *microflow)
 	struct mlx5_fc *counter;
 	int i;
 	int err;
+
+	if (microflow->nr_flows == -1)
+		return -1;
 
 	mflow = alloc_flow(priv, GFP_KERNEL);
 	if (!mflow)
@@ -3657,13 +3679,11 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 
 	flow->cookie = cookie;
 	flow->ct_tuple = ct_tuple;
-	//flow->flags = flags;
-	//
 
 	microflow->path.cookies[microflow->nr_flows] = cookie;
 	microflow->path.flows[microflow->nr_flows] = flow;
 	microflow->nr_flows++;
-	printk("%s, flow->cookie = 0x%lx, nr_flows = %d\n", __func__,
+	printk("%s, cookie = 0x%lx, nr_flows = %d\n", __func__,
 	       cookie, microflow->nr_flows);
 	return 0;
 
@@ -3781,9 +3801,10 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 		goto err_cleanup;
 	}
 
-	printk("%s-%d: lookup 0x%lx, nr_flow = %d\n",
-	       __func__, __LINE__, mf->cookie, microflow->nr_flows);
 	flow = rhashtable_lookup_fast(tc_ht, &mf->cookie, tc_ht_params);
+	printk("%s-%d: lookup 0x%lx, nr_flow = %d, exist = %d, last = %d\n",
+	       __func__, __LINE__, mf->cookie, microflow->nr_flows, !!flow,
+	       !!mf->last_flow);
 	if (!flow)
 		goto err_cleanup;
 
@@ -3794,28 +3815,20 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	}
 
 	microflow->path.cookies[microflow->nr_flows] = mf->cookie;
+	//FIXME: why NULL?
 	microflow->path.flows[microflow->nr_flows] = NULL;
 	microflow->nr_flows++;
 	microflow->priv = priv;
-	printk("%s-%d: nr_flow = %d\n",
-	       __func__, __LINE__, microflow->nr_flows);
-
-	//microflow->flags = flags;
+	//printk("%s-%d: nr_flow = %d\n", __func__, __LINE__, microflow->nr_flows);
 
 	if (!mf->last_flow)
 		return 0;
 
 	err = rhashtable_lookup_insert_fast(mf_ht, &microflow->node, mf_ht_params);
 	if (err) {
-		if (err == -EEXIST) {
-			//FIXME: should we return if it exists?
-			//printk("Microflow exists");
-			goto err_cleanup;
-			//return 0;
-		} else {
-			ntrace("Microflow insert fast failed, err = %d", err);
-			goto err_cleanup;
-		}
+		//if (err == -EEXIST)
+		//	goto err_work;
+		goto err_cleanup;
 	}
 
 	err = microflow_merge_work(microflow);
@@ -3850,12 +3863,13 @@ int mlx5e_delete_flower(struct mlx5e_priv *priv,
 	struct rhashtable *tc_ht = get_tc_ht(priv, flags);
 	struct mlx5e_tc_flow *flow;
 
-	printk("%s-%d: lookup 0x%lx\n", __func__, __LINE__, f->cookie);
+	//printk("%s-%d: lookup 0x%lx\n", __func__, __LINE__, f->cookie);
 	flow = rhashtable_lookup_fast(tc_ht, &f->cookie, tc_ht_params);
 	if (!flow || !same_flow_direction(flow, flags))
 		return -EINVAL;
 
-	printk("%s-%d: remove 0x%lx\n", __func__, __LINE__, flow->cookie);
+	printk("%s-%d: remove 0x%lx, simple = %d\n", __func__, __LINE__,
+	       flow->cookie, !!(flow->flags & MLX5E_TC_FLOW_SIMPLE));
 	rhashtable_remove_fast(tc_ht, &flow->node, tc_ht_params);
 
 	mlx5e_tc_del_flow(priv, flow);
@@ -3961,8 +3975,10 @@ void ct_flow_offload_destroy_work(struct work_struct *work)
 	struct rhashtable *tc_ht = get_tc_ht(flow->priv, MLX5E_TC_ESW_OFFLOAD);
 
 	rtnl_lock();
-	printk("%s-%d: remove 0x%lx\n", __func__, __LINE__, flow->cookie);
-	rhashtable_remove_fast(tc_ht, &flow->node, tc_ht_params);
+	if (rhashtable_lookup_fast(tc_ht, &flow->cookie, tc_ht_params)) {
+		rhashtable_remove_fast(tc_ht, &flow->node, tc_ht_params);
+		printk("%s-%d: remove 0x%lx\n", __func__, __LINE__, flow->cookie);
+	}
 	mlx5e_tc_del_fdb_flow(flow->priv, flow);
 	kfree(flow);
 	rtnl_unlock();
