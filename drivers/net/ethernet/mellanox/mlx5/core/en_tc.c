@@ -3009,6 +3009,7 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 	if (enable_printk)
 		printk("%s:%s: %s\n", __func__, priv->netdev->name, get_offload_flags(flags));
 
+	printk("%s-%d: lookup 0x%lx\n", __func__, __LINE__, f->cookie);
 	flow = rhashtable_lookup_fast(tc_ht, &f->cookie, tc_ht_params);
 	if (flow) {
 		netdev_warn_once(priv->netdev, "flow cookie %lx already exists, ignoring\n", f->cookie);
@@ -3065,8 +3066,9 @@ int mlx5e_configure_flower(struct mlx5e_priv *priv,
 		kvfree(parse_attr);
 
 	//FIXME: crash
-	err = rhashtable_insert_fast(tc_ht, &flow->node, tc_ht_params);
-	if (err) {
+	printk("%s-%d: insert 0x%lx\n", __func__, __LINE__, flow->cookie);
+	err = rhashtable_lookup_insert_fast(tc_ht, &flow->node, tc_ht_params);
+	if (err && err != -EEXIST) {
 		mlx5e_tc_del_flow(priv, flow);
 		kfree(flow);
 	}
@@ -3391,12 +3393,16 @@ static void microflow_cleanup(struct mlx5e_microflow *microflow)
 			continue;
 
 		//FIXME: crash
+		printk("%s-%d: remove 0x%lx, idx = %d/%d\n",
+		       __func__, __LINE__, flow->cookie, i, microflow->nr_flows);
 		rhashtable_remove_fast(tc_ht, &flow->node, tc_ht_params);
 
 		kfree(flow->ct_tuple);
 		kfree(flow->dummy_counter);
 		kvfree(flow->esw_attr->parse_attr);
 		kfree(flow);
+		microflow->path.flows[i] = NULL;
+		memset(flow, 0, sizeof(struct mlx5e_tc_flow));
 	}
 
 	microflow->nr_flows = -1;
@@ -3431,6 +3437,8 @@ static int microflow_register_ct_flow(struct mlx5e_microflow *microflow)
 		} else {
 
 			if (enable_printk_flow) {
+				printk("%s-%d: key: 0x%lx, %d/%d\n",
+				       __func__, __LINE__, flow->cookie, i, microflow->nr_flows);
 				nf_tuple = &flow->ct_tuple->tuple;
 				printk("nft-add-flow-%d: sip-%pI4, dip-%pI4, sport-%d, dport-%d", i,
 				       &nf_tuple->src.u3.ip,
@@ -3458,11 +3466,17 @@ static int microflow_resolve_path_flows(struct mlx5e_microflow *microflow)
 
 	for (i = 0; i < microflow->nr_flows; i++) {
 		cookie = microflow->path.cookies[i];
+		printk("%s-%d: lookup 0x%lx, %d/%d\n",
+		       __func__, __LINE__, cookie, i, microflow->nr_flows);
 		flow = rhashtable_lookup_fast(tc_ht, &cookie, tc_ht_params);
 		if (flow) {
-			if (microflow->path.flows[i]) {
+			if (microflow->path.flows[i] &&
+			    microflow->path.flows[i] != flow) {
 				struct mlx5e_tc_flow *flow = microflow->path.flows[i];
 
+				printk("%s-%d: remove 0x%lx\n", __func__,
+				       __LINE__, flow->cookie);
+				rhashtable_remove_fast(tc_ht, &flow->node, tc_ht_params);
 				kfree(flow->ct_tuple);
 				/* kfree(flow->dummy_counter); */
 				kvfree(flow->esw_attr->parse_attr);
@@ -3476,8 +3490,10 @@ static int microflow_resolve_path_flows(struct mlx5e_microflow *microflow)
 		if (!flow)
 			goto err;
 
-		err = rhashtable_insert_fast(tc_ht, &flow->node, tc_ht_params);
-		if (err)
+		printk("%s-%d: insert 0x%lx, %d/%d\n",
+		       __func__, __LINE__, flow->cookie, i, microflow->nr_flows);
+		err = rhashtable_lookup_insert_fast(tc_ht, &flow->node, tc_ht_params);
+		if (err && err != -EEXIST)
 			goto err;
 	}
 
@@ -3642,10 +3658,13 @@ int mlx5e_configure_ct(struct mlx5e_priv *priv,
 	flow->cookie = cookie;
 	flow->ct_tuple = ct_tuple;
 	//flow->flags = flags;
+	//
 
 	microflow->path.cookies[microflow->nr_flows] = cookie;
 	microflow->path.flows[microflow->nr_flows] = flow;
 	microflow->nr_flows++;
+	printk("%s, flow->cookie = 0x%lx, nr_flows = %d\n", __func__,
+	       cookie, microflow->nr_flows);
 	return 0;
 
 err_free:
@@ -3757,11 +3776,13 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	if (microflow->nr_flows == 0 && mf->last_flow)
 		goto err_cleanup;
 
-	if (unlikely(microflow->nr_flows >= MICROFLOW_MAX_FLOWS)) {
+	if (unlikely(microflow->nr_flows == MICROFLOW_MAX_FLOWS)) {
 		printk("%s: ERR: MICROFLOW_MAX_FLOWS\n", __func__);
 		goto err_cleanup;
 	}
 
+	printk("%s-%d: lookup 0x%lx, nr_flow = %d\n",
+	       __func__, __LINE__, mf->cookie, microflow->nr_flows);
 	flow = rhashtable_lookup_fast(tc_ht, &mf->cookie, tc_ht_params);
 	if (!flow)
 		goto err_cleanup;
@@ -3775,6 +3796,10 @@ int mlx5e_configure_microflow(struct mlx5e_priv *priv,
 	microflow->path.cookies[microflow->nr_flows] = mf->cookie;
 	microflow->path.flows[microflow->nr_flows] = NULL;
 	microflow->nr_flows++;
+	microflow->priv = priv;
+	printk("%s-%d: nr_flow = %d\n",
+	       __func__, __LINE__, microflow->nr_flows);
+
 	//microflow->flags = flags;
 
 	if (!mf->last_flow)
@@ -3825,10 +3850,12 @@ int mlx5e_delete_flower(struct mlx5e_priv *priv,
 	struct rhashtable *tc_ht = get_tc_ht(priv, flags);
 	struct mlx5e_tc_flow *flow;
 
+	printk("%s-%d: lookup 0x%lx\n", __func__, __LINE__, f->cookie);
 	flow = rhashtable_lookup_fast(tc_ht, &f->cookie, tc_ht_params);
 	if (!flow || !same_flow_direction(flow, flags))
 		return -EINVAL;
 
+	printk("%s-%d: remove 0x%lx\n", __func__, __LINE__, flow->cookie);
 	rhashtable_remove_fast(tc_ht, &flow->node, tc_ht_params);
 
 	mlx5e_tc_del_flow(priv, flow);
@@ -3848,6 +3875,7 @@ int mlx5e_stats_flower(struct mlx5e_priv *priv,
 	u64 packets;
 	u64 lastuse;
 
+	//printk("%s-%d: lookup 0x%lx\n", __func__, __LINE__, f->cookie);
 	flow = rhashtable_lookup_fast(tc_ht, &f->cookie, tc_ht_params);
 	if (!flow || !same_flow_direction(flow, flags))
 		return -EINVAL;
@@ -3890,7 +3918,8 @@ void mlx5e_tc_nic_cleanup(struct mlx5e_priv *priv)
 {
 	struct mlx5e_tc_table *tc = &priv->fs.tc;
 
-	rhashtable_destroy(&tc->ht);
+	printk("%s-%d\n", __func__, __LINE__);
+	rhashtable_free_and_destroy(&tc->ht, _mlx5e_tc_del_flow, NULL);
 
 	if (!IS_ERR_OR_NULL(tc->t)) {
 		mlx5_destroy_flow_table(tc->t);
@@ -3932,6 +3961,7 @@ void ct_flow_offload_destroy_work(struct work_struct *work)
 	struct rhashtable *tc_ht = get_tc_ht(flow->priv, MLX5E_TC_ESW_OFFLOAD);
 
 	rtnl_lock();
+	printk("%s-%d: remove 0x%lx\n", __func__, __LINE__, flow->cookie);
 	rhashtable_remove_fast(tc_ht, &flow->node, tc_ht_params);
 	mlx5e_tc_del_fdb_flow(flow->priv, flow);
 	kfree(flow);
@@ -3993,6 +4023,8 @@ int mlx5e_tc_esw_init(struct mlx5e_priv *priv, int flags)
 err_wq:
 	rhashtable_free_and_destroy(mf_ht, NULL, NULL);
 err_mf_ht:
+
+	printk("%s-%d: rhashtable_free_and_destroy\n", __func__, __LINE__);
 	rhashtable_free_and_destroy(tc_ht, NULL, NULL);
 err_tc_ht:
 	kmem_cache_destroy(microflow_cache);
@@ -4009,6 +4041,7 @@ void mlx5e_tc_esw_cleanup(struct mlx5e_priv *priv, int flags)
 	flush_workqueue(microflow_wq);
 	destroy_workqueue(microflow_wq);
 
+	printk("%s-%d\n", __func__, __LINE__);
 	rhashtable_free_and_destroy(tc_ht, _mlx5e_tc_del_flow, NULL);
 	rhashtable_free_and_destroy(mf_ht, NULL, NULL);
 
